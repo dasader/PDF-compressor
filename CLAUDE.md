@@ -75,7 +75,7 @@ npm run lint
 5. On completion, user downloads via `GET /api/jobs/{id}/download`
 
 ### Backend (`backend/app/`)
-- **`main.py`**: FastAPI app setup — CORS, lifespan (DB init + directory creation), router mounting, optional Prometheus metrics at `/metrics`
+- **`main.py`**: FastAPI app setup — CORS, lifespan (DB init + directory creation), router mounting
 - **`core/config.py`**: All configuration via `pydantic-settings`. Reads from `.env`. Key instance: `settings`
 - **`models/job.py`**: SQLAlchemy `Job` model with `JobStatus` and `CompressionPreset` enums
 - **`models/database.py`**: SQLite engine and `SessionLocal`; DB file lives inside the Docker volume at `/data/`

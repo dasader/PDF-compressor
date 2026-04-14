@@ -1,7 +1,7 @@
 """작업 모델"""
 from enum import Enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, Float, DateTime, Text, Boolean, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, Float, DateTime, Text, Boolean, Enum as SQLEnum, Index
 from app.models.database import Base
 
 
@@ -72,7 +72,12 @@ class Job(Base):
     
     # Celery
     celery_task_id = Column(String(100), nullable=True, index=True)
-    
+
+    __table_args__ = (
+        Index("idx_user_status", "user_session", "status"),
+        Index("idx_expires_created", "expires_at", "created_at"),
+    )
+
     @property
     def compression_percentage(self) -> float:
         """압축률 (퍼센트)"""

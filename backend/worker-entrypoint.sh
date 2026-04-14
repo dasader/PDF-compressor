@@ -118,8 +118,10 @@ echo "ℹ️  이제부터 Celery Worker 로그가 표시됩니다..."
 echo ""
 
 exec celery -A app.workers.celery_app worker \
+    --beat \
+    --schedule=/data/celerybeat-schedule \
     --loglevel=info \
-    --concurrency=2 \
+    --concurrency=${WORKER_CONCURRENCY:-1} \
     -n worker@%h
 
 

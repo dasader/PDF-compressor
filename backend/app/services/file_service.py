@@ -103,6 +103,43 @@ class FileService:
             raise
     
     @staticmethod
+    async def save_upload_file_with_hash(
+        upload_file,
+        destination: str,
+        max_size: Optional[int] = None,
+    ) -> tuple:
+        """저장과 SHA-256 해시를 단일 패스로 수행.
+
+        Returns:
+            (size_bytes, sha256_hex)
+        """
+        max_size = max_size or settings.max_upload_size_bytes
+        total_size = 0
+        hasher = hashlib.sha256()
+
+        try:
+            Path(destination).parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(destination, 'wb') as f:
+                while True:
+                    chunk = await upload_file.read(FileService.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > max_size:
+                        await f.close()
+                        if os.path.exists(destination):
+                            os.remove(destination)
+                        raise ValueError(f"파일 크기가 제한을 초과했습니다: {max_size} bytes")
+                    hasher.update(chunk)
+                    await f.write(chunk)
+            logger.info(f"파일+해시 저장 완료: {destination} ({total_size} bytes)")
+            return total_size, hasher.hexdigest()
+        except Exception:
+            if os.path.exists(destination):
+                os.remove(destination)
+            raise
+
+    @staticmethod
     def sanitize_filename(filename: str) -> str:
         """파일명 정리 (경로 조작 방지)"""
         # 디렉토리 구분자 제거
@@ -146,27 +183,6 @@ class FileService:
             # 스캔 실패 시 거부 (fail-secure)
             return False
     
-    @staticmethod
-    def cleanup_old_files():
-        """오래된 파일 정리"""
-        from datetime import datetime, timedelta, timezone
-
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=settings.RETENTION_HOURS)
-        
-        for directory in [settings.UPLOAD_DIR, settings.RESULT_DIR, settings.TEMP_DIR]:
-            if not os.path.exists(directory):
-                continue
-            
-            for root, dirs, files in os.walk(directory):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    try:
-                        file_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                        if file_time < cutoff_time:
-                            os.remove(file_path)
-                            logger.info(f"오래된 파일 삭제: {file_path}")
-                    except Exception as e:
-                        logger.error(f"파일 삭제 실패: {file_path} - {e}")
 
 
 

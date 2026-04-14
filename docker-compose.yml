@@ -3,7 +3,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: pdf-compressor-redis
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 384mb
+      --maxmemory-policy volatile-lru
     ports:
       - "6379:6379"
     volumes:
@@ -18,7 +23,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 512M
         reservations:
           memory: 128M
 
@@ -38,7 +43,7 @@ services:
       - RESULT_DIR=/data/results
       - TEMP_DIR=/data/temp
       - MAX_UPLOAD_SIZE_MB=512
-      - TASK_TIMEOUT_SECONDS=1800
+      - TASK_TIMEOUT_SECONDS=900
       - LOG_LEVEL=WARNING
       - CORS_ORIGINS=http://localhost:3001,http://localhost:8001,http://localhost:8082,http://localhost
     ports:
@@ -60,7 +65,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 800M
+          memory: 640M
         reservations:
           memory: 256M
 
@@ -77,7 +82,7 @@ services:
       - UPLOAD_DIR=/data/uploads
       - RESULT_DIR=/data/results
       - TEMP_DIR=/data/temp
-      - TASK_TIMEOUT_SECONDS=1800
+      - TASK_TIMEOUT_SECONDS=900
       - LOG_LEVEL=WARNING
       - API_URL=http://backend:8000
     volumes:
@@ -99,38 +104,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 1536M
         reservations:
           memory: 256M
-
-  # Celery Beat (스케줄러)
-  beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: pdf-compressor-beat
-    entrypoint: ["/beat-entrypoint.sh"]
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - LOG_LEVEL=WARNING
-      - API_URL=http://backend:8000
-    healthcheck:
-      disable: true
-    depends_on:
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
-    networks:
-      - pdf-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-        reservations:
-          memory: 64M
 
   # 프론트엔드 (Next.js) - 프로덕션
   frontend:
@@ -150,7 +126,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 256M
         reservations:
           memory: 128M
 

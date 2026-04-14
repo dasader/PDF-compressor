@@ -6,6 +6,7 @@ import FileUploader from '@/components/FileUploader';
 import JobCard from '@/components/JobCard';
 import SettingsPanel from '@/components/SettingsPanel';
 import { uploadFiles, getJob, cancelJob, deleteJob, downloadBatch, Job } from '@/lib/api';
+import { subscribeJob } from '@/lib/sse';
 
 export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -25,27 +26,38 @@ export default function Home() {
     return '';
   });
 
-  // 작업 상태 폴링
+  // 활성 작업에 대한 SSE 구독
   useEffect(() => {
-    const interval = setInterval(async () => {
-      const activeJobs = jobs.filter(
-        (job) => job.status === 'queued' || job.status === 'running'
-      );
+    const activeJobs = jobs.filter(
+      (job) => job.status === 'queued' || job.status === 'running'
+    );
+    if (activeJobs.length === 0) return;
 
-      for (const job of activeJobs) {
-        try {
-          const updatedJob = await getJob(job.id);
+    const unsubscribes = activeJobs.map((job) =>
+      subscribeJob(
+        job.id,
+        (partial) => {
           setJobs((prev) =>
-            prev.map((j) => (j.id === job.id ? updatedJob : j))
+            prev.map((j) => (j.id === partial.id ? { ...j, ...partial } : j))
           );
-        } catch (error) {
-          console.error('작업 조회 실패:', error);
+        },
+        () => {
+          // terminal 상태 도달 시 최종 전체 상태를 1회 재조회해 누락된 필드 보정
+          getJob(job.id)
+            .then((full) => {
+              setJobs((prev) => prev.map((j) => (j.id === job.id ? full : j)));
+            })
+            .catch(() => {});
         }
-      }
-    }, 2000); // 2초마다 폴링
+      )
+    );
 
-    return () => clearInterval(interval);
-  }, [jobs]);
+    return () => {
+      unsubscribes.forEach((u) => u());
+    };
+    // 활성 job id+status 집합 변화에만 재구독
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs.map((j) => `${j.id}:${j.status}`).join(',')]);
 
   const handleFilesSelected = async (files: File[]) => {
     try {

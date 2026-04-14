@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Celery 워커 설정
     MAX_WORKERS: int = 4
     WORKER_CONCURRENCY: int = 1  # 2→1: 동시 작업 1개만 (4GB 환경용)
-    TASK_TIMEOUT_SECONDS: int = 1800
+    TASK_TIMEOUT_SECONDS: int = 900
     TASK_MAX_RETRIES: int = 3
     
     # 파일 보관 설정
@@ -58,14 +58,6 @@ class Settings(BaseSettings):
     # 로깅
     LOG_LEVEL: str = "WARNING"  # INFO→WARNING: 로그 감소로 메모리 절약
     LOG_FORMAT: str = "json"
-    
-    # 메트릭
-    ENABLE_METRICS: bool = False  # True→False: 메모리 절약 (4GB 환경용)
-    METRICS_PORT: int = 9090
-    
-    # 웹훅
-    WEBHOOK_ENABLED: bool = False
-    WEBHOOK_URL: Optional[str] = None
     
     # PDF 압축 설정
     DEFAULT_PRESET: str = "ebook"
