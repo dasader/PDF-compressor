@@ -71,6 +71,9 @@ dump.rdb
 # Claude Code
 .claude/
 
+# Git worktrees
+.worktrees/
+
 # Celery
 celerybeat-schedule
 celerybeat.pid
