@@ -3,7 +3,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: pdf-compressor-redis
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 384mb
+      --maxmemory-policy volatile-lru
     ports:
       - "6379:6379"
     volumes:
@@ -18,7 +23,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 512M
         reservations:
           memory: 128M
 
