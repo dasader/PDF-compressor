@@ -103,6 +103,43 @@ class FileService:
             raise
     
     @staticmethod
+    async def save_upload_file_with_hash(
+        upload_file,
+        destination: str,
+        max_size: Optional[int] = None,
+    ) -> tuple:
+        """저장과 SHA-256 해시를 단일 패스로 수행.
+
+        Returns:
+            (size_bytes, sha256_hex)
+        """
+        max_size = max_size or settings.max_upload_size_bytes
+        total_size = 0
+        hasher = hashlib.sha256()
+
+        try:
+            Path(destination).parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(destination, 'wb') as f:
+                while True:
+                    chunk = await upload_file.read(FileService.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > max_size:
+                        await f.close()
+                        if os.path.exists(destination):
+                            os.remove(destination)
+                        raise ValueError(f"파일 크기가 제한을 초과했습니다: {max_size} bytes")
+                    hasher.update(chunk)
+                    await f.write(chunk)
+            logger.info(f"파일+해시 저장 완료: {destination} ({total_size} bytes)")
+            return total_size, hasher.hexdigest()
+        except Exception:
+            if os.path.exists(destination):
+                os.remove(destination)
+            raise
+
+    @staticmethod
     def sanitize_filename(filename: str) -> str:
         """파일명 정리 (경로 조작 방지)"""
         # 디렉토리 구분자 제거
