@@ -6,7 +6,7 @@ from typing import Dict, Any
 from celery import Task
 from app.workers.celery_app import celery_app
 from app.core.config import settings
-from app.models.database import SessionLocal
+from app.models.database import SessionLocal, db_session
 from app.models.job import Job, JobStatus, CompressionPreset
 from app.services.compression_engine import get_engine
 from app.services.file_service import FileService
@@ -19,159 +19,148 @@ class CallbackTask(Task):
     
     def update_progress(self, job_id: str, progress: float, eta_seconds: int = None):
         """작업 진행률 업데이트"""
-        db = SessionLocal()
         try:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job:
-                job.progress = min(progress, 1.0)
-                if eta_seconds is not None:
-                    job.eta_seconds = eta_seconds
-                db.commit()
-                logger.info(f"작업 {job_id} 진행률: {progress * 100:.1f}%")
+            with db_session() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job.progress = min(progress, 1.0)
+                    if eta_seconds is not None:
+                        job.eta_seconds = eta_seconds
+                    logger.info(f"작업 {job_id} 진행률: {progress * 100:.1f}%")
         except Exception as e:
             logger.error(f"진행률 업데이트 실패: {e}")
-        finally:
-            db.close()
 
 
 @celery_app.task(bind=True, base=CallbackTask, max_retries=settings.TASK_MAX_RETRIES)
 def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
     """
     PDF 압축 작업
-    
+
     Args:
         job_id: 작업 ID
-        
+
     Returns:
         작업 결과
     """
-    db = SessionLocal()
-    
     try:
-        # 작업 정보 가져오기
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if not job:
-            raise ValueError(f"작업을 찾을 수 없습니다: {job_id}")
-        
-        logger.info(f"작업 시작: {job_id} - {job.filename}")
-        
-        # 상태 업데이트
-        job.status = JobStatus.RUNNING
-        job.started_at = datetime.now(timezone.utc)
-        job.celery_task_id = self.request.id
-        db.commit()
-        
-        # 파일 경로
-        input_path = os.path.join(settings.UPLOAD_DIR, job.filename)
-        output_filename = f"compressed_{job.filename}"
-        output_path = os.path.join(settings.RESULT_DIR, output_filename)
-        
-        # 입력 파일 존재 확인
-        if not os.path.exists(input_path):
-            raise FileNotFoundError(f"입력 파일이 없습니다: {input_path}")
-        
-        # PDF 유효성 검사
-        if not FileService.validate_pdf(input_path):
-            raise ValueError("유효하지 않은 PDF 파일입니다")
-        
-        # 안티바이러스 스캔 (설정된 경우에만)
-        if settings.ENABLE_ANTIVIRUS:
-            if not FileService.scan_antivirus(input_path):
-                raise ValueError("바이러스가 감지된 파일입니다")
-        
-        # 진행률 콜백
-        def progress_callback(progress: float):
-            self.update_progress(job_id, progress)
-        
-        # PDF 정보 추출
-        self.update_progress(job_id, 0.1)
-        engine = get_engine(job.engine)
-        pdf_info = engine.get_pdf_info(input_path)
-        
-        job.page_count = pdf_info.get('page_count', 0)
-        job.image_count = pdf_info.get('image_count', 0)
-        db.commit()
-        
-        logger.info(f"PDF 정보: {pdf_info}")
-        
-        # 암호화된 PDF 확인
-        if pdf_info.get('encrypted'):
-            raise ValueError("암호화된 PDF는 지원하지 않습니다")
-        
-        # 압축 옵션 구성
-        options = {}
-        if job.custom_options:
-            import json
-            options = json.loads(job.custom_options)
-        
-        # 압축 실행
-        self.update_progress(job_id, 0.2)
-        logger.info(f"압축 시작: engine={job.engine}, preset={job.preset}")
-        
-        result = engine.compress(
-            input_path=input_path,
-            output_path=output_path,
-            preset=job.preset,
-            options=options,
-            progress_callback=progress_callback
-        )
-        
-        # 결과 확인
-        if not os.path.exists(output_path):
-            raise RuntimeError("압축된 파일이 생성되지 않았습니다")
-        
-        compressed_size = os.path.getsize(output_path)
-        
-        # 압축률 계산
-        compression_ratio = compressed_size / job.original_size if job.original_size > 0 else 1.0
-        
-        logger.info(f"압축 완료: {job.original_size} -> {compressed_size} bytes (ratio: {compression_ratio:.2%})")
-        
-        # 작업 완료
-        job.status = JobStatus.COMPLETED
-        job.completed_at = datetime.now(timezone.utc)
-        job.compressed_size = compressed_size
-        job.compression_ratio = compression_ratio
-        job.result_file = output_filename
-        job.progress = 1.0
-        job.expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.RETENTION_HOURS)
-        
-        db.commit()
-        
-        return {
-            'success': True,
-            'job_id': job_id,
-            'compressed_size': compressed_size,
-            'compression_ratio': compression_ratio
-        }
-        
+        with db_session() as db:
+            # 작업 정보 가져오기
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if not job:
+                raise ValueError(f"작업을 찾을 수 없습니다: {job_id}")
+
+            logger.info(f"작업 시작: {job_id} - {job.filename}")
+
+            # 상태 업데이트
+            job.status = JobStatus.RUNNING
+            job.started_at = datetime.now(timezone.utc)
+            job.celery_task_id = self.request.id
+            db.flush()
+
+            # 파일 경로
+            input_path = os.path.join(settings.UPLOAD_DIR, job.filename)
+            output_filename = f"compressed_{job.filename}"
+            output_path = os.path.join(settings.RESULT_DIR, output_filename)
+
+            # 입력 파일 존재 확인
+            if not os.path.exists(input_path):
+                raise FileNotFoundError(f"입력 파일이 없습니다: {input_path}")
+
+            # PDF 유효성 검사
+            if not FileService.validate_pdf(input_path):
+                raise ValueError("유효하지 않은 PDF 파일입니다")
+
+            # 안티바이러스 스캔 (설정된 경우에만)
+            if settings.ENABLE_ANTIVIRUS:
+                if not FileService.scan_antivirus(input_path):
+                    raise ValueError("바이러스가 감지된 파일입니다")
+
+            # 진행률 콜백
+            def progress_callback(progress: float):
+                self.update_progress(job_id, progress)
+
+            # PDF 정보 추출
+            self.update_progress(job_id, 0.1)
+            engine_impl = get_engine(job.engine)
+            pdf_info = engine_impl.get_pdf_info(input_path)
+
+            job.page_count = pdf_info.get('page_count', 0)
+            job.image_count = pdf_info.get('image_count', 0)
+            db.flush()
+
+            logger.info(f"PDF 정보: {pdf_info}")
+
+            # 암호화된 PDF 확인
+            if pdf_info.get('encrypted'):
+                raise ValueError("암호화된 PDF는 지원하지 않습니다")
+
+            # 압축 옵션 구성
+            options = {}
+            if job.custom_options:
+                import json
+                options = json.loads(job.custom_options)
+
+            # 압축 실행
+            self.update_progress(job_id, 0.2)
+            logger.info(f"압축 시작: engine={job.engine}, preset={job.preset}")
+
+            engine_impl.compress(
+                input_path=input_path,
+                output_path=output_path,
+                preset=job.preset,
+                options=options,
+                progress_callback=progress_callback,
+            )
+
+            # 결과 확인
+            if not os.path.exists(output_path):
+                raise RuntimeError("압축된 파일이 생성되지 않았습니다")
+
+            compressed_size = os.path.getsize(output_path)
+
+            # 압축률 계산
+            compression_ratio = compressed_size / job.original_size if job.original_size > 0 else 1.0
+
+            logger.info(f"압축 완료: {job.original_size} -> {compressed_size} bytes (ratio: {compression_ratio:.2%})")
+
+            # 작업 완료
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.now(timezone.utc)
+            job.compressed_size = compressed_size
+            job.compression_ratio = compression_ratio
+            job.result_file = output_filename
+            job.progress = 1.0
+            job.expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.RETENTION_HOURS)
+
+            return {
+                'success': True,
+                'job_id': job_id,
+                'compressed_size': compressed_size,
+                'compression_ratio': compression_ratio,
+            }
+
     except Exception as e:
         logger.error(f"작업 실패: {job_id} - {e}", exc_info=True)
-        
-        # 재시도 처리
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if job:
-            job.retry_count += 1
-            
-            if job.retry_count < settings.TASK_MAX_RETRIES:
-                logger.info(f"작업 재시도: {job_id} (시도 {job.retry_count}/{settings.TASK_MAX_RETRIES})")
-                db.commit()
-                
-                # 지수 백오프로 재시도
-                raise self.retry(exc=e, countdown=60 * (2 ** job.retry_count))
-            else:
-                # 최대 재시도 초과
-                job.status = JobStatus.FAILED
-                job.error_message = str(e)
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
-                
-                raise
-        
+        retry_countdown = None
+        try:
+            with db_session() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job.retry_count += 1
+                    if job.retry_count < settings.TASK_MAX_RETRIES:
+                        logger.info(f"작업 재시도: {job_id} ({job.retry_count}/{settings.TASK_MAX_RETRIES})")
+                        retry_countdown = 60 * (2 ** job.retry_count)
+                    else:
+                        # 최대 재시도 초과
+                        job.status = JobStatus.FAILED
+                        job.error_message = str(e)
+                        job.completed_at = datetime.now(timezone.utc)
+        except Exception as inner:
+            logger.error(f"재시도 레코드 업데이트 실패: {inner}")
+
+        if retry_countdown is not None:
+            raise self.retry(exc=e, countdown=retry_countdown)
         raise
-        
-    finally:
-        db.close()
 
 
 @celery_app.task
