@@ -36,10 +36,8 @@ COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
 COPY --chown=appuser:appuser ./app ./app
 COPY --chown=appuser:appuser entrypoint.sh /entrypoint.sh
 COPY --chown=appuser:appuser worker-entrypoint.sh /worker-entrypoint.sh
-COPY --chown=appuser:appuser beat-entrypoint.sh /beat-entrypoint.sh
-
 USER root
-RUN chmod +x /entrypoint.sh /worker-entrypoint.sh /beat-entrypoint.sh && \
+RUN chmod +x /entrypoint.sh /worker-entrypoint.sh && \
     mkdir -p /data/uploads /data/results /data/temp && \
     chown -R appuser:appuser /data
 USER appuser

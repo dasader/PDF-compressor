@@ -103,35 +103,6 @@ services:
         reservations:
           memory: 256M
 
-  # Celery Beat (스케줄러)
-  beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: pdf-compressor-beat
-    entrypoint: ["/beat-entrypoint.sh"]
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - LOG_LEVEL=WARNING
-      - API_URL=http://backend:8000
-    healthcheck:
-      disable: true
-    depends_on:
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
-    networks:
-      - pdf-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 128M
-        reservations:
-          memory: 64M
-
   # 프론트엔드 (Next.js) - 프로덕션
   frontend:
     build:
