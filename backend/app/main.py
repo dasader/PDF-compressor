@@ -4,8 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from prometheus_client import make_asgi_app
-
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.models.database import engine, Base
@@ -64,12 +62,6 @@ app.add_middleware(
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(jobs.router, prefix="/api", tags=["Jobs"])
 app.include_router(health.router, prefix="/api", tags=["Health"])
-
-
-# Prometheus 메트릭 (옵션)
-if settings.ENABLE_METRICS:
-    metrics_app = make_asgi_app()
-    app.mount("/metrics", metrics_app)
 
 
 # 루트 엔드포인트
