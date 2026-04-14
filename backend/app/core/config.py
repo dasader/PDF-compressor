@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Celery 워커 설정
     MAX_WORKERS: int = 4
     WORKER_CONCURRENCY: int = 1  # 2→1: 동시 작업 1개만 (4GB 환경용)
-    TASK_TIMEOUT_SECONDS: int = 1800
+    TASK_TIMEOUT_SECONDS: int = 900
     TASK_MAX_RETRIES: int = 3
     
     # 파일 보관 설정

@@ -43,7 +43,7 @@ services:
       - RESULT_DIR=/data/results
       - TEMP_DIR=/data/temp
       - MAX_UPLOAD_SIZE_MB=512
-      - TASK_TIMEOUT_SECONDS=1800
+      - TASK_TIMEOUT_SECONDS=900
       - LOG_LEVEL=WARNING
       - CORS_ORIGINS=http://localhost:3001,http://localhost:8001,http://localhost:8082,http://localhost
     ports:
@@ -82,7 +82,7 @@ services:
       - UPLOAD_DIR=/data/uploads
       - RESULT_DIR=/data/results
       - TEMP_DIR=/data/temp
-      - TASK_TIMEOUT_SECONDS=1800
+      - TASK_TIMEOUT_SECONDS=900
       - LOG_LEVEL=WARNING
       - API_URL=http://backend:8000
     volumes:
