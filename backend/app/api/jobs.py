@@ -1,21 +1,73 @@
 """작업 관리 API"""
 import os
 import logging
+import asyncio
+import json as _json
 from typing import List, Optional
 from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
 from app.core.schemas import JobResponse
+from app.core.redis_client import redis_client
 from app.models.database import get_db
 from app.models.job import Job, JobStatus
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job(job_id: str, db: Session = Depends(get_db)):
+    """Job 상태 변화를 SSE로 전달 (스냅샷 + Redis pub/sub)."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다")
+
+    # 스냅샷 캡처 (엔드포인트 함수 스코프에서 세션이 닫히기 전에 값을 뽑아둔다)
+    snapshot = {
+        "job_id": job.id,
+        "status": job.status.value if hasattr(job.status, "value") else str(job.status),
+        "progress": job.progress,
+        "eta_seconds": job.eta_seconds,
+    }
+
+    async def event_gen():
+        yield {"event": "snapshot", "data": _json.dumps(snapshot)}
+
+        if snapshot["status"] in ("completed", "failed", "cancelled"):
+            return
+
+        pubsub = redis_client.pubsub()
+        try:
+            pubsub.subscribe(f"job:{job_id}")
+            while True:
+                msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg.get("type") == "message":
+                    data = msg["data"]
+                    if isinstance(data, (bytes, bytearray)):
+                        data = data.decode()
+                    yield {"event": "update", "data": data}
+                    try:
+                        parsed = _json.loads(data)
+                        if parsed.get("type") == "status" and parsed.get("status") in ("completed", "failed", "cancelled"):
+                            return
+                    except Exception:
+                        pass
+                await asyncio.sleep(0)
+        finally:
+            try:
+                pubsub.unsubscribe(f"job:{job_id}")
+                pubsub.close()
+            except Exception:
+                pass
+
+    return EventSourceResponse(event_gen())
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)
