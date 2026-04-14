@@ -27,7 +27,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"데이터베이스 초기화 중 경고: {e}")
         logger.info("데이터베이스 테이블이 이미 존재합니다")
-    
+
+    # 복합 인덱스 보장 (기존 DB 대상)
+    try:
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_status ON jobs (user_session, status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_expires_created ON jobs (expires_at, created_at)"))
+        logger.info("복합 인덱스 확인 완료")
+    except Exception as e:
+        logger.warning(f"인덱스 생성 중 경고: {e}")
+
     # 디렉토리 생성
     settings.ensure_directories()
     logger.info("디렉토리 생성 완료")
