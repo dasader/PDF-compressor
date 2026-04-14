@@ -138,10 +138,6 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
         
         db.commit()
         
-        # 웹훅 전송
-        if settings.WEBHOOK_ENABLED and settings.WEBHOOK_URL:
-            send_webhook_notification(job_id, 'completed')
-        
         return {
             'success': True,
             'job_id': job_id,
@@ -170,49 +166,12 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
                 
-                # 웹훅 전송
-                if settings.WEBHOOK_ENABLED and settings.WEBHOOK_URL:
-                    send_webhook_notification(job_id, 'failed')
-                
                 raise
         
         raise
         
     finally:
         db.close()
-
-
-def send_webhook_notification(job_id: str, status: str):
-    """웹훅 알림 전송"""
-    try:
-        import httpx
-        
-        db = SessionLocal()
-        job = db.query(Job).filter(Job.id == job_id).first()
-        db.close()
-        
-        if not job:
-            return
-        
-        payload = {
-            'job_id': job_id,
-            'status': status,
-            'filename': job.original_filename,
-            'compressed_size': job.compressed_size,
-            'compression_ratio': job.compression_ratio,
-            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
-        }
-        
-        with httpx.Client() as client:
-            response = client.post(
-                settings.WEBHOOK_URL,
-                json=payload,
-                timeout=10
-            )
-            logger.info(f"웹훅 전송 완료: {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"웹훅 전송 실패: {e}", exc_info=True)
 
 
 @celery_app.task

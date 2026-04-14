@@ -59,10 +59,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "WARNING"  # INFO→WARNING: 로그 감소로 메모리 절약
     LOG_FORMAT: str = "json"
     
-    # 웹훅
-    WEBHOOK_ENABLED: bool = False
-    WEBHOOK_URL: Optional[str] = None
-    
     # PDF 압축 설정
     DEFAULT_PRESET: str = "ebook"
     DEFAULT_ENGINE: str = "ghostscript"
