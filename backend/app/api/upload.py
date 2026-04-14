@@ -14,8 +14,16 @@ from app.models.database import get_db
 from app.models.job import Job, JobStatus, CompressionPreset
 from app.services.file_service import FileService
 from app.workers.tasks import compress_pdf_task
+import hashlib as _hashlib
+from app.core.redis_client import redis_client
+from redis.exceptions import LockError
 
 router = APIRouter()
+
+
+def _options_hash(preset, engine, preserve_metadata, preserve_ocr) -> str:
+    key = f"{preset}|{engine}|{preserve_metadata}|{preserve_ocr}".encode()
+    return _hashlib.sha256(key).hexdigest()[:16]
 logger = logging.getLogger(__name__)
 
 
@@ -62,80 +70,81 @@ async def upload_files(
             filename = f"{file_id}.pdf"
             file_path = os.path.join(settings.UPLOAD_DIR, filename)
             
-            # 스트리밍 저장
+            # 스트리밍 저장 + 해시 단일 패스
             logger.info(f"파일 저장 시작: {original_filename}")
-            file_size = await FileService.save_upload_file(
+            file_size, file_hash = await FileService.save_upload_file_with_hash(
                 upload_file,
                 file_path,
-                max_size=settings.max_upload_size_bytes
+                max_size=settings.max_upload_size_bytes,
             )
-            
+
             # PDF 유효성 검사
             if not FileService.validate_pdf(file_path):
                 os.remove(file_path)
                 raise HTTPException(status_code=400, detail=f"유효하지 않은 PDF: {original_filename}")
-            
-            # 안티바이러스 스캔 (설정된 경우에만)
+
+            # 안티바이러스 스캔
             if settings.ENABLE_ANTIVIRUS:
                 if not FileService.scan_antivirus(file_path):
                     os.remove(file_path)
                     raise HTTPException(status_code=400, detail=f"바이러스 감지: {original_filename}")
-            
-            # 파일 해시 계산 (중복 체크용)
-            file_hash = None
+
+            # dedup: Redis 분산 락으로 경합 보호
+            reused = False
             if settings.ENABLE_DEDUPLICATION:
-                file_hash = await FileService.calculate_file_hash(file_path)
-                
-                # 기존 작업 확인 (파일 해시 + 압축 옵션 모두 동일해야 재사용)
-                existing_job = db.query(Job).filter(
-                    Job.file_hash == file_hash,
-                    Job.status == JobStatus.COMPLETED,
-                    Job.expires_at > datetime.now(timezone.utc),
-                    Job.preset == preset,
-                    Job.engine == engine,
-                    Job.preserve_metadata == preserve_metadata,
-                    Job.preserve_ocr == preserve_ocr
-                ).first()
-                
-                if existing_job:
-                    # 기존 결과 파일이 실제로 존재하는지 확인
-                    result_path = os.path.join(settings.RESULT_DIR, existing_job.result_file) if existing_job.result_file else None
-                    
-                    if result_path and os.path.exists(result_path):
-                        logger.info(f"중복 파일 감지, 기존 결과 재사용: {file_hash}")
-                        # 새 작업 레코드 생성 (기존 결과 참조)
-                        new_job = Job(
-                            id=file_id,
-                            user_session=user_session,
-                            filename=filename,
-                            original_filename=original_filename,
-                            file_hash=file_hash,
-                            original_size=file_size,
-                            compressed_size=existing_job.compressed_size,
-                            compression_ratio=existing_job.compression_ratio,
-                            page_count=existing_job.page_count,
-                            image_count=existing_job.image_count,
-                            preset=preset,
-                            engine=engine,
-                            preserve_metadata=preserve_metadata,
-                            preserve_ocr=preserve_ocr,
-                            status=JobStatus.COMPLETED,
-                            result_file=existing_job.result_file,
-                            progress=1.0,
-                            created_at=datetime.now(timezone.utc),
-                            completed_at=datetime.now(timezone.utc),
-                            expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.RETENTION_HOURS)
-                        )
-                        db.add(new_job)
-                        db.commit()
-                        
-                        job_ids.append(file_id)
-                        continue
-                    else:
-                        logger.warning(f"중복 파일이지만 기존 결과 파일이 없음, 새로 처리: {file_hash}")
-                        # 기존 작업의 결과 파일이 없으면 새로 처리
-            
-            # 작업 레코드 생성
+                opt_hash = _options_hash(preset, engine, preserve_metadata, preserve_ocr)
+                lock_key = f"dedup:{file_hash}:{opt_hash}"
+                try:
+                    with redis_client.lock(lock_key, timeout=5, blocking_timeout=10):
+                        existing_job = db.query(Job).filter(
+                            Job.file_hash == file_hash,
+                            Job.status == JobStatus.COMPLETED,
+                            Job.expires_at > datetime.now(timezone.utc),
+                            Job.preset == preset,
+                            Job.engine == engine,
+                            Job.preserve_metadata == preserve_metadata,
+                            Job.preserve_ocr == preserve_ocr,
+                        ).first()
+
+                        if existing_job and existing_job.result_file:
+                            result_path = os.path.join(settings.RESULT_DIR, existing_job.result_file)
+                            if os.path.exists(result_path):
+                                logger.info(f"중복 감지, 기존 결과 재사용: {file_hash}")
+                                new_job = Job(
+                                    id=file_id,
+                                    user_session=user_session,
+                                    filename=filename,
+                                    original_filename=original_filename,
+                                    file_hash=file_hash,
+                                    original_size=file_size,
+                                    compressed_size=existing_job.compressed_size,
+                                    compression_ratio=existing_job.compression_ratio,
+                                    page_count=existing_job.page_count,
+                                    image_count=existing_job.image_count,
+                                    preset=preset,
+                                    engine=engine,
+                                    preserve_metadata=preserve_metadata,
+                                    preserve_ocr=preserve_ocr,
+                                    status=JobStatus.COMPLETED,
+                                    result_file=existing_job.result_file,
+                                    progress=1.0,
+                                    created_at=datetime.now(timezone.utc),
+                                    completed_at=datetime.now(timezone.utc),
+                                    expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.RETENTION_HOURS),
+                                )
+                                db.add(new_job)
+                                db.commit()
+                                job_ids.append(file_id)
+                                reused = True
+                except LockError:
+                    logger.warning(f"dedup 락 획득 실패, 새 작업으로 진행: {file_hash}")
+                except Exception as e:
+                    logger.error(f"dedup 처리 중 오류, 새 작업으로 진행: {e}")
+
+            if reused:
+                continue
+
+            # 일반 처리: 신규 Job + Celery dispatch
             job = Job(
                 id=file_id,
                 user_session=user_session,
@@ -148,17 +157,15 @@ async def upload_files(
                 preserve_metadata=preserve_metadata,
                 preserve_ocr=preserve_ocr,
                 status=JobStatus.QUEUED,
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc),
             )
-            
             db.add(job)
             db.commit()
-            
-            # Celery 작업 등록
+
             task = compress_pdf_task.delay(file_id)
             job.celery_task_id = task.id
             db.commit()
-            
+
             logger.info(f"작업 등록: {file_id} - {original_filename}")
             job_ids.append(file_id)
             
