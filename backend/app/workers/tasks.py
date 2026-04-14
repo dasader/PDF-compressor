@@ -1,17 +1,27 @@
 """Celery 작업"""
 import os
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 from celery import Task
 from app.workers.celery_app import celery_app
 from app.core.config import settings
+from app.core.redis_client import redis_client
 from app.models.database import db_session
 from app.models.job import Job, JobStatus, CompressionPreset
 from app.services.compression_engine import get_engine
 from app.services.file_service import FileService
 
 logger = logging.getLogger(__name__)
+
+
+def _publish_job_event(job_id: str, payload: dict) -> None:
+    """Redis 채널 'job:{id}'로 이벤트 발행. 실패해도 작업 진행에 영향 없음."""
+    try:
+        redis_client.publish(f"job:{job_id}", json.dumps(payload).encode())
+    except Exception as e:
+        logger.warning(f"publish 실패 (무시): {e}")
 
 
 class CallbackTask(Task):
@@ -29,6 +39,12 @@ class CallbackTask(Task):
                     logger.info(f"작업 {job_id} 진행률: {progress * 100:.1f}%")
         except Exception as e:
             logger.error(f"진행률 업데이트 실패: {e}")
+        _publish_job_event(job_id, {
+            "job_id": job_id,
+            "type": "progress",
+            "progress": min(progress, 1.0),
+            "eta_seconds": eta_seconds,
+        })
 
 
 @celery_app.task(bind=True, base=CallbackTask, max_retries=settings.TASK_MAX_RETRIES)
@@ -56,6 +72,7 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
             job.started_at = datetime.now(timezone.utc)
             job.celery_task_id = self.request.id
             db.flush()
+            _publish_job_event(job_id, {"job_id": job_id, "type": "status", "status": "running"})
 
             # 파일 경로
             input_path = os.path.join(settings.UPLOAD_DIR, job.filename)
@@ -97,7 +114,6 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
             # 압축 옵션 구성
             options = {}
             if job.custom_options:
-                import json
                 options = json.loads(job.custom_options)
 
             # 압축 실행
@@ -132,6 +148,10 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
             job.progress = 1.0
             job.expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.RETENTION_HOURS)
 
+            _publish_job_event(job_id, {
+                "job_id": job_id, "type": "status", "status": "completed",
+                "compressed_size": compressed_size, "compression_ratio": compression_ratio,
+            })
             return {
                 'success': True,
                 'job_id': job_id,
@@ -160,6 +180,7 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
 
         if retry_countdown is not None:
             raise self.retry(exc=e, countdown=retry_countdown)
+        _publish_job_event(job_id, {"job_id": job_id, "type": "status", "status": "failed", "error": str(e)})
         raise
 
 
