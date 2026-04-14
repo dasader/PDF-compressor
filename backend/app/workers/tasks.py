@@ -6,7 +6,7 @@ from typing import Dict, Any
 from celery import Task
 from app.workers.celery_app import celery_app
 from app.core.config import settings
-from app.models.database import SessionLocal, db_session
+from app.models.database import db_session
 from app.models.job import Job, JobStatus, CompressionPreset
 from app.services.compression_engine import get_engine
 from app.services.file_service import FileService
@@ -165,41 +165,48 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
 
 @celery_app.task
 def cleanup_old_files_task():
-    """오래된 파일 정리 작업"""
+    """만료된 Job과 연관된 업로드/결과 파일을 배치 단위로 정리한다."""
     logger.info("파일 정리 작업 시작")
+    cutoff_time = datetime.now(timezone.utc)
+    total_deleted = 0
+    batch_size = 200
+
     try:
-        FileService.cleanup_old_files()
-        
-        # DB에서도 만료된 작업 정리
-        db = SessionLocal()
-        cutoff_time = datetime.now(timezone.utc)
-        expired_jobs = db.query(Job).filter(
-            Job.expires_at < cutoff_time,
-            Job.status.in_([JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED])
-        ).all()
-        
-        for job in expired_jobs:
-            # 파일 삭제
-            if job.filename:
-                upload_path = os.path.join(settings.UPLOAD_DIR, job.filename)
-                if os.path.exists(upload_path):
-                    os.remove(upload_path)
-            
-            if job.result_file:
-                result_path = os.path.join(settings.RESULT_DIR, job.result_file)
-                if os.path.exists(result_path):
-                    os.remove(result_path)
-            
-            # DB에서 삭제
-            db.delete(job)
-        
-        db.commit()
-        db.close()
-        
-        logger.info(f"정리 완료: {len(expired_jobs)}개 작업 삭제")
-        
+        while True:
+            with db_session() as db:
+                expired_jobs = (
+                    db.query(Job)
+                    .filter(
+                        Job.expires_at < cutoff_time,
+                        Job.status.in_([JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]),
+                    )
+                    .limit(batch_size)
+                    .all()
+                )
+                if not expired_jobs:
+                    break
+
+                for job in expired_jobs:
+                    if job.filename:
+                        upload_path = os.path.join(settings.UPLOAD_DIR, job.filename)
+                        if os.path.exists(upload_path):
+                            try:
+                                os.remove(upload_path)
+                            except OSError as e:
+                                logger.warning(f"업로드 파일 삭제 실패: {upload_path}: {e}")
+                    if job.result_file:
+                        result_path = os.path.join(settings.RESULT_DIR, job.result_file)
+                        if os.path.exists(result_path):
+                            try:
+                                os.remove(result_path)
+                            except OSError as e:
+                                logger.warning(f"결과 파일 삭제 실패: {result_path}: {e}")
+                    db.delete(job)
+                total_deleted += len(expired_jobs)
+
+        logger.info(f"정리 완료: {total_deleted}개 작업 삭제")
     except Exception as e:
-        logger.error(f"파일 정리 실패: {e}")
+        logger.error(f"파일 정리 실패: {e}", exc_info=True)
 
 
 # 주기적 정리 작업 스케줄링
