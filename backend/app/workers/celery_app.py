@@ -6,7 +6,7 @@ celery_app = Celery(
     'pdf_compressor',
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=['app.workers.tasks']
+    include=['app.workers.tasks'],
 )
 
 celery_app.conf.update(
@@ -15,25 +15,24 @@ celery_app.conf.update(
     result_serializer='json',
     timezone='UTC',
     enable_utc=True,
-    
-    # 작업 설정
+
     task_track_started=True,
     task_time_limit=settings.TASK_TIMEOUT_SECONDS,
-    task_soft_time_limit=settings.TASK_TIMEOUT_SECONDS - 60,
-    
-    # 재시도 설정
+    task_soft_time_limit=max(30, settings.TASK_TIMEOUT_SECONDS - 60),
+
     task_acks_late=True,
     task_reject_on_worker_lost=True,
-    
-    # 동시성
+
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=50,
-    
-    # 결과 만료
-    result_expires=3600 * 24,  # 24시간
+    worker_max_memory_per_child=1_200_000,  # KB = 1.2GB — auto-restart worker above this
 
-    # Celery 6.0 대비 브로커 재연결 설정
+    task_compression='gzip',
+
+    result_expires=3600 * 12,  # 24h → 12h (Redis 용량 절감)
+
     broker_connection_retry_on_startup=True,
+    broker_transport_options={'visibility_timeout': 3600},
 )
 
 
