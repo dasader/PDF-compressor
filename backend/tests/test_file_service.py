@@ -99,31 +99,7 @@ async def test_save_upload_file_size_limit(sample_pdf, setup_test_dirs):
     assert not os.path.exists(destination)
 
 
-def test_cleanup_old_files(setup_test_dirs):
-    """오래된 파일 정리 테스트"""
-    import time
-    from datetime import datetime, timedelta
-    
-    # 오래된 파일 생성
-    old_file = './test_data/uploads/old_file.pdf'
-    with open(old_file, 'wb') as f:
-        f.write(b"Old file content")
-    
-    # 수정 시간을 과거로 설정
-    old_time = (datetime.now() - timedelta(days=2)).timestamp()
-    os.utime(old_file, (old_time, old_time))
-    
-    # 새 파일 생성
-    new_file = './test_data/uploads/new_file.pdf'
-    with open(new_file, 'wb') as f:
-        f.write(b"New file content")
-    
-    # 정리 실행 (기본 24시간)
-    # 실제로는 설정에 따라 동작하지만, 여기서는 함수 호출만 테스트
-    # FileService.cleanup_old_files()
-    
-    # 실제 정리는 설정에 의존하므로 여기서는 함수 존재만 확인
-    assert hasattr(FileService, 'cleanup_old_files')
+# test_cleanup_old_files 제거: FileService.cleanup_old_files 는 cleanup_old_files_task 로 통합됨
 
 
 
