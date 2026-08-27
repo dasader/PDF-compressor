@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A large-scale PDF compression web application. Users upload PDFs via the Next.js frontend, the FastAPI backend enqueues Celery tasks via Redis, and a Celery worker runs the actual compression using Ghostscript, qpdf, or pikepdf. Compressed files are retained for 24 hours and cleaned up by an embedded Celery Beat scheduler (running inside the worker container).
+A large-scale PDF compression web application. Users upload PDFs via the Next.js frontend, the FastAPI backend enqueues Celery tasks via Redis, and a Celery worker runs the actual compression using Ghostscript (lossy, image downsampling) or pikepdf (lossless, structure only). Compressed files are retained for 24 hours and cleaned up by an embedded Celery Beat scheduler (running inside the worker container).
 
 ## Running the Application
 
@@ -83,7 +83,7 @@ npm run lint
 - **`api/upload.py`**: Single-pass save + SHA-256 hash; Redis distributed-lock-protected dedup; Celery task dispatch
 - **`api/jobs.py`**: `get_job_or_404` dependency, SSE stream endpoint (`/jobs/{id}/stream`, async Redis pub/sub), per-file download, batch ZIP (built on disk in `TEMP_DIR` and removed by a `BackgroundTask`), cancellation via Celery revoke
 - **`services/file_service.py`**: `save_upload_file_with_hash` (single-pass), PDF validation, filename sanitization
-- **`services/compression_engine.py`**: Strategy pattern — `GhostscriptEngine`, `QPDFEngine`, `PikePDFEngine` all extend `CompressionEngine`, sharing `_run_cli()`/`_cli_compress()`/`_result()`. `compress()` takes `preserve_metadata` explicitly (only pikepdf honors it; gs/qpdf always preserve). `get_engine()` raises `ValueError` on an unknown name and falls back only when the named engine is unavailable. Module-level `get_pdf_info()` is engine-independent
+- **`services/compression_engine.py`**: Strategy pattern — `GhostscriptEngine` (lossy: halves image resolution, the only engine that shrinks scans) and `PikePDFEngine` (lossless: structure only, best on text-heavy docs, always available so it doubles as the fallback) extend `CompressionEngine` and share `_result()`. `compress()` takes `preserve_metadata` explicitly (only pikepdf honors it; Ghostscript always preserves). `get_engine()` raises `ValueError` on an unknown name, maps retired names via `_ALIASES` (`qpdf` → `pikepdf`), and falls back only when the named engine is unavailable. Module-level `get_pdf_info()` is engine-independent
 - **`workers/tasks.py`**: `compress_pdf_task` uses three short DB sessions (start / progress / result) so the long compression never holds the SQLite write lock; `cleanup_old_files_task` runs hourly via embedded Beat and batches-and-paginates expired jobs. `expires_at` is set on success, failure, and cancellation, so every terminal job is eventually reclaimed
 
 ### Compression Presets
@@ -118,7 +118,7 @@ npm run lint
 - SQLite is used for job metadata (no external DB needed); WAL mode enabled; DB file stored in the shared `/data/` Docker volume
 - Celery Beat runs **embedded** in the worker (`-B` flag); no separate beat container. Schedule stored at `/data/celerybeat-schedule`
 - Redis runs without AOF/RDB persistence (queue/results are ephemeral) with `volatile-lru` eviction. Also serves as SSE pub/sub backbone on channels `job:{id}`
-- `pikepdf` is always available (pure Python); `ghostscript` and `qpdf` require system binaries installed in the backend image (multi-stage build)
+- `pikepdf` is always available (pure Python) and serves as the fallback; `ghostscript` requires the system binary installed in the backend image (multi-stage build)
 - Encrypted PDFs are rejected at both upload-time (worker validation) and task-time
 - Deduplication uses Redis distributed locks on `dedup:{file_hash}:{options_hash}` to prevent race conditions during concurrent uploads of the same file. The reused result is **hard-linked** under the new job's own name, so cleaning up the original job never orphans the copy
 - Container memory limits (total ~3.0GB): redis 512M, backend 640M, worker 1.5G (embedded Beat), frontend 256M, nginx 64M. Worker auto-restarts when a child exceeds 1.2GB RSS

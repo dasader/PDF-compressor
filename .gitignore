@@ -92,3 +92,7 @@ celerybeat.pid
 backend/test.db
 *.db-wal
 *.db-shm
+
+# 게이트 실행이 만드는 산출물 (저장소 정책상 커밋하지 않음)
+frontend/package-lock.json
+frontend/next-env.d.ts

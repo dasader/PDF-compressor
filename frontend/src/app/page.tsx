@@ -219,7 +219,7 @@ export default function Home() {
         <div className="container mx-auto px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
           <p>© 2025 {APP_NAME}. 모든 권리 보유.</p>
           <p className="mt-1">
-            Ghostscript, qpdf, pikepdf를 사용합니다.
+            Ghostscript와 pikepdf를 사용합니다.
           </p>
         </div>
       </footer>
