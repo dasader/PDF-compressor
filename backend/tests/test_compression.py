@@ -14,7 +14,7 @@ ENGINES = [GhostscriptEngine(), QPDFEngine(), PikePDFEngine()]
 
 
 @pytest.fixture
-def written_pdf(sample_pdf_bytes, setup_test_dirs, tmp_path):
+def written_pdf(sample_pdf_bytes, tmp_path):
     """샘플 PDF를 파일로 떨어뜨리고 (입력경로, 출력경로)를 준다"""
     input_path = tmp_path / "input.pdf"
     input_path.write_bytes(sample_pdf_bytes)
@@ -80,3 +80,27 @@ def test_pdf_info_extraction(written_pdf):
 def test_compression_presets():
     """압축 프리셋 값 확인"""
     assert {p.value for p in CompressionPreset} == {'screen', 'ebook', 'printer', 'prepress'}
+
+
+def test_pikepdf_honors_preserve_metadata(written_pdf):
+    """preserve_metadata=False면 pikepdf가 실제로 docinfo를 비운다 (라운드 1에서 고친 경로)"""
+    import pikepdf
+
+    input_path, output_path = written_pdf
+    with pikepdf.open(input_path, allow_overwriting_input=True) as pdf:
+        pdf.docinfo['/Title'] = 'secret title'
+        # open_metadata는 종료 시 XMP를 docinfo로 동기화하므로 같은 값을 쓴다
+        with pdf.open_metadata() as meta:
+            meta['dc:title'] = 'secret title'
+        pdf.save(input_path)
+
+    engine = PikePDFEngine()
+
+    engine.compress(input_path, output_path, CompressionPreset.EBOOK, preserve_metadata=True)
+    with pikepdf.open(output_path) as pdf:
+        assert str(pdf.docinfo.get('/Title')) == 'secret title'
+
+    engine.compress(input_path, output_path, CompressionPreset.EBOOK, preserve_metadata=False)
+    with pikepdf.open(output_path) as pdf:
+        assert '/Title' not in pdf.docinfo
+        assert pdf.open_metadata().get('dc:title') is None

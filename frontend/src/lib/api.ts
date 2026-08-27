@@ -2,7 +2,7 @@
  * API 클라이언트
  */
 import axios from 'axios';
-import type { Preset, Engine } from './constants';
+import type { Preset, Engine, JobStatus } from './constants';
 
 // 상대 경로를 사용하여 nginx/Next.js의 rewrites를 통해 프록시되도록 함
 // 브라우저에서는 현재 호스트의 /api로 요청하고, nginx/Next.js가 백엔드로 프록시
@@ -12,10 +12,6 @@ export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 1800000, // 30분 (대용량 파일 업로드용)
 });
-
-export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
-
-export const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled'];
 
 export interface Job {
   id: string;
@@ -37,8 +33,14 @@ export interface Job {
   expires_at?: string;
 }
 
+export interface UploadFailure {
+  filename: string;
+  error: string;
+}
+
 export interface UploadResponse {
-  job_ids: string[];
+  jobs: Job[];
+  failed: UploadFailure[];
   message: string;
 }
 
@@ -46,7 +48,6 @@ export interface UploadOptions {
   preset?: Preset;
   engine?: Engine;
   preserve_metadata?: boolean;
-  preserve_ocr?: boolean;
   user_session?: string;
 }
 
@@ -64,7 +65,6 @@ export const uploadFiles = async (
   formData.append('preset', options.preset || 'ebook');
   formData.append('engine', options.engine || 'ghostscript');
   formData.append('preserve_metadata', String(options.preserve_metadata ?? true));
-  formData.append('preserve_ocr', String(options.preserve_ocr ?? true));
 
   if (options.user_session) {
     formData.append('user_session', options.user_session);

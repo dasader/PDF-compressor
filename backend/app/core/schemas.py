@@ -1,7 +1,7 @@
 """Pydantic 스키마"""
 from typing import Optional
-from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime, timezone
+from pydantic import BaseModel, ConfigDict, field_serializer
 from app.models.job import JobStatus
 
 
@@ -33,10 +33,22 @@ class JobResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_serializer('created_at', 'started_at', 'completed_at', 'expires_at')
+    def _stamp_utc(self, value: Optional[datetime]) -> Optional[datetime]:
+        """DB의 naive UTC 값을 클라이언트가 오해하지 않도록 UTC로 표시한다."""
+        return value.replace(tzinfo=timezone.utc) if value else value
+
+
+class UploadFailure(BaseModel):
+    """배치 중 실패한 파일 하나"""
+    filename: str
+    error: str
+
 
 class UploadResponse(BaseModel):
-    """업로드 응답"""
-    job_ids: list[str]
+    """업로드 응답 — 생성된 Job을 그대로 담아 클라이언트의 재조회를 없앤다"""
+    jobs: list[JobResponse] = []
+    failed: list[UploadFailure] = []
     message: str = "Files uploaded successfully"
 
 

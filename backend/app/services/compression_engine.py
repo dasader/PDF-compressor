@@ -5,7 +5,7 @@ import subprocess
 import shutil
 from abc import ABC, abstractmethod
 from functools import lru_cache
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import pikepdf
 from app.models.job import CompressionPreset
 from app.core.config import settings
@@ -61,6 +61,12 @@ def _result(engine: str, input_path: str, output_path: str) -> Dict[str, Any]:
     }
 
 
+def _cli_compress(engine: str, cmd: List[str], input_path: str, output_path: str) -> Dict[str, Any]:
+    """외부 CLI 엔진의 공통 흐름: 실행 → 결과 요약."""
+    _run_cli(cmd, engine)
+    return _result(engine, input_path, output_path)
+
+
 def _run_cli(cmd: List[str], engine: str) -> None:
     """외부 압축 CLI 실행. 타임아웃/실패를 RuntimeError로 정규화한다."""
     logger.info(f"{engine} 명령 실행: {' '.join(cmd)}")
@@ -90,10 +96,12 @@ class CompressionEngine(ABC):
         input_path: str,
         output_path: str,
         preset: CompressionPreset,
-        options: Optional[Dict[str, Any]] = None,
-        progress_callback: Optional[callable] = None
+        preserve_metadata: bool = True,
     ) -> Dict[str, Any]:
-        """PDF를 압축하고 결과 요약을 반환한다."""
+        """PDF를 압축하고 결과 요약을 반환한다.
+
+        preserve_metadata를 실제로 반영하는 것은 pikepdf뿐이다 (gs/qpdf는 항상 보존).
+        """
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -115,8 +123,7 @@ class GhostscriptEngine(CompressionEngine):
     def is_available(self) -> bool:
         return _which(self.BINARY)
 
-    def compress(self, input_path, output_path, preset, options=None, progress_callback=None):
-        options = options or {}
+    def compress(self, input_path, output_path, preset, preserve_metadata=True):
         cfg = self.PRESET_SETTINGS.get(preset, self.PRESET_SETTINGS[CompressionPreset.EBOOK])
         dpi = cfg['dpi']
 
@@ -143,13 +150,7 @@ class GhostscriptEngine(CompressionEngine):
             input_path,
         ]
 
-        if progress_callback:
-            progress_callback(0.3)
-        _run_cli(cmd, 'ghostscript')
-        if progress_callback:
-            progress_callback(0.9)
-
-        return _result('ghostscript', input_path, output_path)
+        return _cli_compress('ghostscript', cmd, input_path, output_path)
 
 
 class QPDFEngine(CompressionEngine):
@@ -158,7 +159,7 @@ class QPDFEngine(CompressionEngine):
     def is_available(self) -> bool:
         return _which('qpdf')
 
-    def compress(self, input_path, output_path, preset, options=None, progress_callback=None):
+    def compress(self, input_path, output_path, preset, preserve_metadata=True):
         cmd = [
             'qpdf',
             '--optimize-images',
@@ -170,13 +171,7 @@ class QPDFEngine(CompressionEngine):
             output_path,
         ]
 
-        if progress_callback:
-            progress_callback(0.3)
-        _run_cli(cmd, 'qpdf')
-        if progress_callback:
-            progress_callback(0.9)
-
-        return _result('qpdf', input_path, output_path)
+        return _cli_compress('qpdf', cmd, input_path, output_path)
 
 
 class PikePDFEngine(CompressionEngine):
@@ -186,19 +181,14 @@ class PikePDFEngine(CompressionEngine):
         """항상 사용 가능 (순수 Python 패키지)"""
         return True
 
-    def compress(self, input_path, output_path, preset, options=None, progress_callback=None):
-        options = options or {}
-
+    def compress(self, input_path, output_path, preset, preserve_metadata=True):
         try:
-            if progress_callback:
-                progress_callback(0.2)
-
             with pikepdf.open(input_path) as pdf:
-                if progress_callback:
-                    progress_callback(0.5)
-
-                if not options.get('preserve_metadata', True):
-                    pdf.docinfo.clear()
+                if not preserve_metadata:
+                    # pikepdf Dictionary에는 clear()가 없다 — /Info와 XMP를 각각 떼어낸다
+                    del pdf.docinfo
+                    if '/Metadata' in pdf.Root:
+                        del pdf.Root['/Metadata']
 
                 pdf.save(
                     output_path,
@@ -206,9 +196,6 @@ class PikePDFEngine(CompressionEngine):
                     stream_decode_level=pikepdf.StreamDecodeLevel.generalized,
                     object_stream_mode=pikepdf.ObjectStreamMode.generate,
                 )
-
-            if progress_callback:
-                progress_callback(0.9)
 
             return _result('pikepdf', input_path, output_path)
 

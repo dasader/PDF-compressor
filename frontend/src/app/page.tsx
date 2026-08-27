@@ -6,11 +6,9 @@ import FileUploader from '@/components/FileUploader';
 import JobCard from '@/components/JobCard';
 import SettingsPanel, { type CompressionSettings } from '@/components/SettingsPanel';
 import { uploadFiles, getJob, cancelJob, deleteJob, downloadBatch, Job } from '@/lib/api';
-import { APP_NAME, MAX_UPLOAD_SIZE_MB, RETENTION_HOURS } from '@/lib/constants';
+import { APP_NAME, MAX_UPLOAD_SIZE_MB, RETENTION_HOURS, isTerminal } from '@/lib/constants';
 import { subscribeJob } from '@/lib/sse';
 import { showApiError } from '@/lib/utils';
-
-const isActive = (job: Job) => job.status === 'queued' || job.status === 'running';
 
 export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -18,7 +16,6 @@ export default function Home() {
     preset: 'ebook',
     engine: 'ghostscript',
     preserveMetadata: true,
-    preserveOcr: true,
   });
   const [userSession] = useState(() => {
     if (typeof window === 'undefined') return '';
@@ -45,7 +42,7 @@ export default function Home() {
 
   // 활성 작업만 개별 구독 — 한 작업의 상태 변화가 다른 작업의 연결을 끊지 않는다
   useEffect(() => {
-    const active = new Set(jobs.filter(isActive).map((j) => j.id));
+    const active = new Set(jobs.filter((j) => !isTerminal(j.status)).map((j) => j.id));
     const subs = subscriptions.current;
 
     subs.forEach((unsubscribe, id) => {
@@ -77,14 +74,16 @@ export default function Home() {
         preset: settings.preset,
         engine: settings.engine,
         preserve_metadata: settings.preserveMetadata,
-        preserve_ocr: settings.preserveOcr,
         user_session: userSession,
       });
 
-      const newJobs = await Promise.all(response.job_ids.map((id) => getJob(id)));
-      setJobs((prev) => [...newJobs, ...prev]);
+      // 서버가 생성된 Job을 그대로 돌려주므로 파일당 재조회가 필요 없다
+      setJobs((prev) => [...response.jobs, ...prev]);
 
-      alert(`${files.length}개 파일 업로드 완료!`);
+      const failures = response.failed
+        .map((f) => `\n· ${f.filename}: ${f.error}`)
+        .join('');
+      alert(response.message + failures);
     } catch (error) {
       showApiError('업로드 실패', error);
     }

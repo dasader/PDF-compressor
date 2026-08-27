@@ -9,15 +9,12 @@ import { cn } from '@/lib/utils';
 
 interface FileUploaderProps {
   onFilesSelected: (files: File[]) => void;
-  maxFiles?: number;
-  maxSize?: number;
 }
 
-export default function FileUploader({
-  onFilesSelected,
-  maxFiles = MAX_FILES_PER_BATCH,
-  maxSize = MAX_UPLOAD_SIZE_BYTES,
-}: FileUploaderProps) {
+const maxFiles = MAX_FILES_PER_BATCH;
+const maxSize = MAX_UPLOAD_SIZE_BYTES;
+
+function FileUploader({ onFilesSelected }: FileUploaderProps) {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -34,7 +31,7 @@ export default function FileUploader({
     });
 
     setSelectedFiles((prev) => [...prev, ...validFiles].slice(0, maxFiles));
-  }, [maxFiles, maxSize]);
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -119,3 +116,6 @@ export default function FileUploader({
     </div>
   );
 }
+
+// SSE 진행률 틱마다 useDropzone을 다시 초기화하지 않도록 메모이즈
+export default React.memo(FileUploader);

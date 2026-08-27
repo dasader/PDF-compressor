@@ -3,15 +3,15 @@ import os
 from app.services.file_service import FileService, delete_job_files
 
 
-def test_validate_pdf(sample_pdf, setup_test_dirs):
+def test_validate_pdf(sample_pdf, tmp_path):
     """PDF 유효성 검사 테스트"""
-    valid_path = './test_data/uploads/valid.pdf'
+    valid_path = str(tmp_path / 'valid.pdf')
     with open(valid_path, 'wb') as f:
         f.write(sample_pdf.read())
 
     assert FileService.validate_pdf(valid_path) is True
 
-    invalid_path = './test_data/uploads/invalid.pdf'
+    invalid_path = str(tmp_path / 'invalid.pdf')
     with open(invalid_path, 'wb') as f:
         f.write(b"Not a PDF file")
 
@@ -40,12 +40,8 @@ def test_sanitize_filename_leaves_no_separator():
         assert os.path.basename(got) == got
 
 
-def test_delete_job_files_is_idempotent(make_job, setup_test_dirs, monkeypatch):
-    """파일이 이미 없어도 예외 없이 통과한다"""
-    from app.core.config import settings
-    monkeypatch.setattr(settings, 'UPLOAD_DIR', './test_data/uploads')
-    monkeypatch.setattr(settings, 'RESULT_DIR', './test_data/results')
-
+def test_delete_job_files_is_idempotent(make_job):
+    """파일이 이미 없어도 예외 없이 통과한다 (디렉터리는 isolated_dirs가 격리해 둔다)"""
     job = make_job(filename='gone.pdf', result_file='gone_result.pdf')
     delete_job_files(job)  # 파일이 없는 상태
 

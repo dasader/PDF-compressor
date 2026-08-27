@@ -1,21 +1,22 @@
 """작업 관리 API"""
 import os
-import io
 import json
-import asyncio
 import logging
+import tempfile
 import zipfile
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone
+from starlette.background import BackgroundTask
+from datetime import timedelta
 from sse_starlette.sse import EventSourceResponse
 
+from app.core.config import settings
 from app.core.schemas import JobResponse
-from app.core.redis_client import redis_client
+from app.core.redis_client import async_redis_client
 from app.models.database import get_db
-from app.models.job import Job, JobStatus, TERMINAL_STATUSES, TERMINAL_STATUS_VALUES
+from app.models.job import Job, JobStatus, TERMINAL_STATUSES, utcnow
 from app.services.file_service import delete_job_files
 from app.workers.celery_app import celery_app
 
@@ -41,30 +42,32 @@ async def stream_job(job: Job = Depends(get_job_or_404)):
     async def event_gen():
         yield {"event": "snapshot", "data": json.dumps(snapshot)}
 
-        if snapshot["status"] in TERMINAL_STATUS_VALUES:
+        if snapshot["status"] in TERMINAL_STATUSES:
             return
 
-        pubsub = redis_client.pubsub()
+        # 동기 클라이언트의 get_message는 이벤트 루프를 최대 1초씩 멈춘다 — 비동기 클라이언트를 쓴다
+        pubsub = async_redis_client.pubsub()
         try:
-            pubsub.subscribe(f"job:{job_id}")
+            await pubsub.subscribe(f"job:{job_id}")
             while True:
-                msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if msg and msg.get("type") == "message":
-                    data = msg["data"]
-                    if isinstance(data, (bytes, bytearray)):
-                        data = data.decode()
-                    yield {"event": "update", "data": data}
-                    try:
-                        parsed = json.loads(data)
-                        if parsed.get("type") == "status" and parsed.get("status") in TERMINAL_STATUS_VALUES:
-                            return
-                    except Exception:
-                        pass
-                await asyncio.sleep(0)
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not (msg and msg.get("type") == "message"):
+                    continue
+
+                data = msg["data"]
+                if isinstance(data, (bytes, bytearray)):
+                    data = data.decode()
+                yield {"event": "update", "data": data}
+
+                try:
+                    parsed = json.loads(data)
+                    if parsed.get("type") == "status" and parsed.get("status") in TERMINAL_STATUSES:
+                        return
+                except Exception:
+                    pass
         finally:
             try:
-                pubsub.unsubscribe(f"job:{job_id}")
-                pubsub.close()
+                await pubsub.aclose()
             except Exception:
                 pass
 
@@ -77,33 +80,6 @@ async def get_job(job: Job = Depends(get_job_or_404)):
     return job
 
 
-@router.get("/jobs", response_model=List[JobResponse])
-async def list_jobs(
-    user_session: Optional[str] = None,
-    status: Optional[JobStatus] = None,
-    limit: int = 50,
-    offset: int = 0,
-    db: Session = Depends(get_db)
-):
-    """
-    작업 목록 조회
-
-    - **user_session**: 사용자 세션 ID로 필터링 (옵션)
-    - **status**: 작업 상태로 필터링 (옵션)
-    - **limit**: 최대 결과 수
-    - **offset**: 결과 오프셋
-    """
-    query = db.query(Job)
-
-    if user_session:
-        query = query.filter(Job.user_session == user_session)
-
-    if status:
-        query = query.filter(Job.status == status)
-
-    return query.order_by(Job.created_at.desc()).limit(limit).offset(offset).all()
-
-
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job: Job = Depends(get_job_or_404), db: Session = Depends(get_db)):
     """작업 취소"""
@@ -114,7 +90,9 @@ async def cancel_job(job: Job = Depends(get_job_or_404), db: Session = Depends(g
         celery_app.control.revoke(job.celery_task_id, terminate=True)
 
     job.status = JobStatus.CANCELLED
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = utcnow()
+    # expires_at을 채워야 정리 작업이 취소된 작업의 업로드 파일도 회수한다
+    job.expires_at = job.completed_at + timedelta(hours=settings.RETENTION_HOURS)
     db.commit()
 
     logger.info(f"작업 취소: {job.id}")
@@ -128,14 +106,11 @@ async def download_result(job: Job = Depends(get_job_or_404)):
     if job.status != JobStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="작업이 완료되지 않았습니다")
 
-    if not job.result_file:
-        raise HTTPException(status_code=404, detail="결과 파일이 없습니다")
-
-    if job.expires_at and job.expires_at < datetime.now(timezone.utc):
+    if job.expires_at and job.expires_at < utcnow():
         raise HTTPException(status_code=410, detail="파일이 만료되었습니다")
 
-    if not os.path.exists(job.result_path):
-        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
+    if not job.result_exists:
+        raise HTTPException(status_code=404, detail="결과 파일을 찾을 수 없습니다")
 
     # FileResponse가 filename을 RFC 5987(filename*=utf-8'')로 인코딩해준다
     return FileResponse(
@@ -145,8 +120,9 @@ async def download_result(job: Job = Depends(get_job_or_404)):
     )
 
 
+# sync def — Starlette가 threadpool로 돌리므로 ZIP 생성이 이벤트 루프를 막지 않는다
 @router.post("/jobs/batch/download")
-async def download_batch(job_ids: List[str], db: Session = Depends(get_db)):
+def download_batch(job_ids: List[str], db: Session = Depends(get_db)):
     """
     여러 작업 결과를 ZIP으로 다운로드
 
@@ -157,21 +133,26 @@ async def download_batch(job_ids: List[str], db: Session = Depends(get_db)):
         Job.status == JobStatus.COMPLETED
     ).all()
 
-    if not jobs:
+    members = [(job.result_path, job.download_name) for job in jobs if job.result_exists]
+    if not members:
         raise HTTPException(status_code=404, detail="완료된 작업이 없습니다")
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for job in jobs:
-            if job.result_file and os.path.exists(job.result_path):
-                zip_file.write(job.result_path, job.download_name)
+    # 메모리에 통째로 올리면 512MB 파일 여러 개에 컨테이너가 죽는다 — 디스크에 만들고 스트리밍한다
+    fd, zip_path = tempfile.mkstemp(suffix=".zip", dir=settings.TEMP_DIR)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for path, arcname in members:
+                zip_file.write(path, arcname)
+    except Exception:
+        os.remove(zip_path)
+        raise
 
-    zip_buffer.seek(0)
-
-    return StreamingResponse(
-        zip_buffer,
+    return FileResponse(
+        zip_path,
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="compressed_files.zip"'}
+        filename="compressed_files.zip",
+        background=BackgroundTask(os.remove, zip_path),
     )
 
 

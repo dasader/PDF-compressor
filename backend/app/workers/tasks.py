@@ -1,18 +1,22 @@
 """Celery 작업"""
-import os
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+import os
+from datetime import timedelta
 from typing import Dict, Any
 from app.workers.celery_app import celery_app
 from app.core.config import settings
 from app.core.redis_client import redis_client
 from app.models.database import db_session
-from app.models.job import Job, JobStatus, TERMINAL_STATUSES
+from app.models.job import Job, JobStatus, TERMINAL_STATUSES, utcnow
 from app.services.compression_engine import get_engine, get_pdf_info
 from app.services.file_service import FileService, delete_job_files
 
 logger = logging.getLogger(__name__)
+
+
+def _expiry():
+    return utcnow() + timedelta(hours=settings.RETENTION_HOURS)
 
 
 def _publish_job_event(job_id: str, payload: dict) -> None:
@@ -23,6 +27,10 @@ def _publish_job_event(job_id: str, payload: dict) -> None:
         logger.warning(f"publish 실패 (무시): {e}")
 
 
+def _publish_status(job_id: str, status: str, **extra) -> None:
+    _publish_job_event(job_id, {"job_id": job_id, "type": "status", "status": status, **extra})
+
+
 def update_progress(job_id: str, progress: float) -> None:
     """작업 진행률 업데이트 (DB + SSE 발행)"""
     progress = min(progress, 1.0)
@@ -31,7 +39,6 @@ def update_progress(job_id: str, progress: float) -> None:
             job = db.query(Job).filter(Job.id == job_id).first()
             if job:
                 job.progress = progress
-                logger.info(f"작업 {job_id} 진행률: {progress * 100:.1f}%")
     except Exception as e:
         logger.error(f"진행률 업데이트 실패: {e}")
     _publish_job_event(job_id, {"job_id": job_id, "type": "progress", "progress": progress})
@@ -49,82 +56,89 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
         작업 결과
     """
     try:
+        # 1) 시작 표시. 압축은 최대 TASK_TIMEOUT_SECONDS만큼 걸리므로
+        #    SQLite 쓰기 락을 그 구간 내내 쥐지 않도록 여기서 트랜잭션을 닫는다.
         with db_session() as db:
             job = db.query(Job).filter(Job.id == job_id).first()
             if not job:
                 raise ValueError(f"작업을 찾을 수 없습니다: {job_id}")
 
+            job.status = JobStatus.RUNNING
+            job.started_at = utcnow()
+            job.result_file = f"compressed_{job.filename}"
+
+            # 세션이 닫히면 접근할 수 없으므로 압축에 필요한 값을 여기서 뽑아둔다
+            input_path = job.upload_path
+            output_path = job.result_path
+            result_filename = job.result_file
+            engine_name = job.engine
+            preset = job.preset
+            preserve_metadata = job.preserve_metadata
+            original_size = job.original_size
             logger.info(f"작업 시작: {job_id} - {job.filename}")
 
-            job.status = JobStatus.RUNNING
-            job.started_at = datetime.now(timezone.utc)
-            db.flush()
-            _publish_job_event(job_id, {"job_id": job_id, "type": "status", "status": "running"})
+        _publish_status(job_id, "running")
 
-            input_path = job.upload_path
-            output_filename = f"compressed_{job.filename}"
-            output_path = os.path.join(settings.RESULT_DIR, output_filename)
+        # 2) 압축 구간 — DB 트랜잭션 없음
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(f"입력 파일이 없습니다: {input_path}")
 
-            if not os.path.exists(input_path):
-                raise FileNotFoundError(f"입력 파일이 없습니다: {input_path}")
+        if not FileService.validate_pdf(input_path):
+            raise ValueError("유효하지 않은 PDF 파일입니다")
 
-            if not FileService.validate_pdf(input_path):
-                raise ValueError("유효하지 않은 PDF 파일입니다")
+        if not FileService.scan_antivirus(input_path):
+            raise ValueError("바이러스가 감지된 파일입니다")
 
-            if not FileService.scan_antivirus(input_path):
-                raise ValueError("바이러스가 감지된 파일입니다")
+        update_progress(job_id, 0.1)
+        pdf_info = get_pdf_info(input_path)
+        logger.info(f"PDF 정보: {pdf_info}")
 
-            update_progress(job_id, 0.1)
-            pdf_info = get_pdf_info(input_path)
-            job.page_count = pdf_info.get('page_count', 0)
-            job.image_count = pdf_info.get('image_count', 0)
-            db.flush()
+        if pdf_info.get('encrypted'):
+            raise ValueError("암호화된 PDF는 지원하지 않습니다")
 
-            logger.info(f"PDF 정보: {pdf_info}")
+        update_progress(job_id, 0.3)
+        logger.info(f"압축 시작: engine={engine_name}, preset={preset}")
 
-            if pdf_info.get('encrypted'):
-                raise ValueError("암호화된 PDF는 지원하지 않습니다")
+        result = get_engine(engine_name).compress(
+            input_path=input_path,
+            output_path=output_path,
+            preset=preset,
+            preserve_metadata=preserve_metadata,
+        )
+        compressed_size = result['output_size']
+        compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
+        update_progress(job_id, 0.9)
 
-            update_progress(job_id, 0.2)
-            logger.info(f"압축 시작: engine={job.engine}, preset={job.preset}")
+        logger.info(f"압축 완료: {original_size} -> {compressed_size} bytes (ratio: {compression_ratio:.2%})")
 
-            get_engine(job.engine).compress(
-                input_path=input_path,
-                output_path=output_path,
-                preset=job.preset,
-                options={
-                    'preserve_metadata': job.preserve_metadata,
-                    'preserve_ocr': job.preserve_ocr,
-                },
-                progress_callback=lambda p: update_progress(job_id, p),
-            )
+        # 3) 결과 기록 — 다시 짧은 트랜잭션
+        with db_session() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                job.status = JobStatus.COMPLETED
+                job.completed_at = utcnow()
+                job.compressed_size = compressed_size
+                job.compression_ratio = compression_ratio
+                job.result_file = result_filename
+                job.page_count = pdf_info.get('page_count', 0)
+                job.image_count = pdf_info.get('image_count', 0)
+                job.progress = 1.0
+                job.expires_at = _expiry()
 
-            if not os.path.exists(output_path):
-                raise RuntimeError("압축된 파일이 생성되지 않았습니다")
+        # 결과가 확정된 뒤에는 원본을 들고 있을 이유가 없다 (보관 기간 동안 용량이 두 배가 된다)
+        try:
+            os.remove(input_path)
+        except OSError as e:
+            logger.warning(f"업로드 원본 삭제 실패: {input_path}: {e}")
 
-            compressed_size = os.path.getsize(output_path)
-            compression_ratio = compressed_size / job.original_size if job.original_size > 0 else 1.0
-
-            logger.info(f"압축 완료: {job.original_size} -> {compressed_size} bytes (ratio: {compression_ratio:.2%})")
-
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now(timezone.utc)
-            job.compressed_size = compressed_size
-            job.compression_ratio = compression_ratio
-            job.result_file = output_filename
-            job.progress = 1.0
-            job.expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.RETENTION_HOURS)
-
-            _publish_job_event(job_id, {
-                "job_id": job_id, "type": "status", "status": "completed",
-                "compressed_size": compressed_size, "compression_ratio": compression_ratio,
-            })
-            return {
-                'success': True,
-                'job_id': job_id,
-                'compressed_size': compressed_size,
-                'compression_ratio': compression_ratio,
-            }
+        _publish_status(job_id, "completed",
+                        compressed_size=compressed_size, compression_ratio=compression_ratio)
+        return {
+            'success': True,
+            'job_id': job_id,
+            'compressed_size': compressed_size,
+            'compression_ratio': compression_ratio,
+        }
 
     except Exception as e:
         logger.error(f"작업 실패: {job_id} - {e}", exc_info=True)
@@ -142,13 +156,16 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
                     else:
                         job.status = JobStatus.FAILED
                         job.error_message = str(e)
-                        job.completed_at = datetime.now(timezone.utc)
+                        job.completed_at = utcnow()
+                        job.result_file = None
+                        # expires_at을 채워야 정리 작업이 실패한 작업의 업로드 파일도 회수한다
+                        job.expires_at = _expiry()
         except Exception as inner:
             logger.error(f"재시도 레코드 업데이트 실패: {inner}")
 
         if retry_countdown is not None:
             raise self.retry(exc=e, countdown=retry_countdown)
-        _publish_job_event(job_id, {"job_id": job_id, "type": "status", "status": "failed", "error": str(e)})
+        _publish_status(job_id, "failed", error=str(e))
         raise
 
 
@@ -156,7 +173,7 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
 def cleanup_old_files_task():
     """만료된 Job과 연관된 업로드/결과 파일을 배치 단위로 정리한다."""
     logger.info("파일 정리 작업 시작")
-    cutoff_time = datetime.now(timezone.utc)
+    cutoff_time = utcnow()
     total_deleted = 0
     batch_size = 200
 

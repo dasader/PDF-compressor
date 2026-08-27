@@ -3,16 +3,17 @@ import os
 import uuid
 import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.schemas import UploadResponse
+from app.core.schemas import JobResponse, UploadFailure, UploadResponse
 from app.core.redis_client import redis_client
 from app.models.database import get_db
-from app.models.job import Job, JobStatus, CompressionPreset
+from app.models.job import Job, JobStatus, CompressionPreset, utcnow
 from app.services.file_service import FileService
 from app.workers.tasks import compress_pdf_task
 from redis.exceptions import LockError
@@ -21,53 +22,57 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _options_hash(preset, engine, preserve_metadata, preserve_ocr) -> str:
-    key = f"{preset}|{engine}|{preserve_metadata}|{preserve_ocr}".encode()
+def _options_hash(base: dict) -> str:
+    key = f"{base['preset']}|{base['engine']}|{base['preserve_metadata']}".encode()
     return hashlib.sha256(key).hexdigest()[:16]
 
 
-def _reuse_completed_result(db: Session, file_hash: str, base_kwargs: dict, **opts) -> bool:
-    """같은 파일+옵션의 완료된 결과가 있으면 재사용해 Job을 만든다.
+def _reuse_completed_result(db: Session, base: dict) -> Optional[Job]:
+    """같은 파일+옵션의 완료된 결과가 있으면 하드링크로 재사용해 Job을 만든다.
 
-    Redis 분산 락으로 동시 업로드 경합을 막는다. 재사용했으면 True.
+    결과 파일을 새 Job 이름으로 하드링크하기 때문에, 원본 Job이 정리되어도
+    재사용한 Job의 결과는 살아남는다 (경로만 공유하면 정리 작업과 경합한다).
+    Redis 분산 락으로 동시 업로드 경합을 막는다. 재사용했으면 새 Job.
     """
-    lock_key = f"dedup:{file_hash}:{_options_hash(**opts)}"
+    lock_key = f"dedup:{base['file_hash']}:{_options_hash(base)}"
     try:
         with redis_client.lock(lock_key, timeout=5, blocking_timeout=10):
             existing = db.query(Job).filter(
-                Job.file_hash == file_hash,
+                Job.file_hash == base['file_hash'],
                 Job.status == JobStatus.COMPLETED,
-                Job.expires_at > datetime.now(timezone.utc),
-                Job.preset == opts['preset'],
-                Job.engine == opts['engine'],
-                Job.preserve_metadata == opts['preserve_metadata'],
-                Job.preserve_ocr == opts['preserve_ocr'],
+                Job.expires_at > utcnow(),
+                Job.preset == base['preset'],
+                Job.engine == base['engine'],
+                Job.preserve_metadata == base['preserve_metadata'],
             ).first()
 
-            if not (existing and existing.result_file and os.path.exists(existing.result_path)):
-                return False
+            if not (existing and existing.result_exists):
+                return None
 
-            logger.info(f"중복 감지, 기존 결과 재사용: {file_hash}")
-            now = datetime.now(timezone.utc)
-            db.add(Job(
-                **base_kwargs,
+            now = utcnow()
+            job = Job(
+                **base,
                 compressed_size=existing.compressed_size,
                 compression_ratio=existing.compression_ratio,
                 page_count=existing.page_count,
                 image_count=existing.image_count,
                 status=JobStatus.COMPLETED,
-                result_file=existing.result_file,
+                result_file=f"compressed_{base['filename']}",
                 progress=1.0,
                 completed_at=now,
                 expires_at=now + timedelta(hours=settings.RETENTION_HOURS),
-            ))
+            )
+            os.link(existing.result_path, job.result_path)
+
+            db.add(job)
             db.commit()
-            return True
+            logger.info(f"중복 감지, 기존 결과 재사용: {base['file_hash']}")
+            return job
     except LockError:
-        logger.warning(f"dedup 락 획득 실패, 새 작업으로 진행: {file_hash}")
+        logger.warning(f"dedup 락 획득 실패, 새 작업으로 진행: {base['file_hash']}")
     except Exception as e:
         logger.error(f"dedup 처리 중 오류, 새 작업으로 진행: {e}")
-    return False
+    return None
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -76,7 +81,6 @@ async def upload_files(
     preset: CompressionPreset = Form(CompressionPreset.EBOOK),
     engine: Optional[str] = Form("ghostscript"),
     preserve_metadata: bool = Form(True),
-    preserve_ocr: bool = Form(True),
     user_session: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
@@ -87,8 +91,9 @@ async def upload_files(
     - **preset**: 압축 프리셋 (screen/ebook/printer/prepress)
     - **engine**: 압축 엔진 (ghostscript/qpdf/pikepdf)
     - **preserve_metadata**: 메타데이터 보존 여부
-    - **preserve_ocr**: OCR 텍스트 레이어 보존 여부
     - **user_session**: 사용자 세션 ID (옵션)
+
+    파일 단위로 실패를 모아 `failed`로 돌려준다. 전부 실패한 경우에만 400.
     """
 
     if len(files) > settings.MAX_FILES_PER_BATCH:
@@ -97,66 +102,83 @@ async def upload_files(
             detail=f"최대 {settings.MAX_FILES_PER_BATCH}개 파일까지 업로드 가능합니다"
         )
 
-    opts = dict(preset=preset, engine=engine,
-                preserve_metadata=preserve_metadata, preserve_ocr=preserve_ocr)
-    job_ids = []
+    created: List[Job] = []
+    queued: List[tuple] = []   # (job, task_id) — 커밋 후 한꺼번에 디스패치
+    failed: List[UploadFailure] = []
 
     for upload_file in files:
-        try:
-            original_filename = FileService.sanitize_filename(upload_file.filename)
-            file_id = str(uuid.uuid4())
-            filename = f"{file_id}.pdf"
-            file_path = os.path.join(settings.UPLOAD_DIR, filename)
+        original_filename = FileService.sanitize_filename(upload_file.filename)
+        file_id = str(uuid.uuid4())
+        filename = f"{file_id}.pdf"
+        file_path = os.path.join(settings.UPLOAD_DIR, filename)
 
+        try:
             logger.info(f"파일 저장 시작: {original_filename}")
             file_size, file_hash = await FileService.save_upload_file_with_hash(
-                upload_file,
-                file_path,
-                max_size=settings.max_upload_size_bytes,
+                upload_file, file_path, max_size=settings.max_upload_size_bytes,
             )
 
             if not FileService.validate_pdf(file_path):
-                os.remove(file_path)
-                raise HTTPException(status_code=400, detail=f"유효하지 않은 PDF: {original_filename}")
+                raise ValueError("유효하지 않은 PDF 파일입니다")
 
             if not FileService.scan_antivirus(file_path):
-                os.remove(file_path)
-                raise HTTPException(status_code=400, detail=f"바이러스 감지: {original_filename}")
+                raise ValueError("바이러스가 감지되었습니다")
 
-            base_kwargs = dict(
+            base = dict(
                 id=file_id,
                 user_session=user_session,
                 filename=filename,
                 original_filename=original_filename,
                 file_hash=file_hash,
                 original_size=file_size,
-                created_at=datetime.now(timezone.utc),
-                **opts,
+                created_at=utcnow(),
+                preset=preset,
+                engine=engine,
+                preserve_metadata=preserve_metadata,
             )
 
-            if settings.ENABLE_DEDUPLICATION and _reuse_completed_result(
-                db, file_hash, base_kwargs, **opts
-            ):
-                job_ids.append(file_id)
+            # 락 획득(최대 10초)과 커밋은 blocking이라 이벤트 루프 밖에서 돌린다
+            reused = None
+            if settings.ENABLE_DEDUPLICATION:
+                reused = await run_in_threadpool(_reuse_completed_result, db, base)
+
+            if reused is not None:
+                # 재사용했으면 방금 저장한 원본은 압축될 일이 없다
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+                created.append(reused)
                 continue
 
-            # task_id를 미리 정해두면 Job 저장이 커밋 한 번으로 끝난다
-            task_id = str(uuid.uuid4())
-            db.add(Job(**base_kwargs, status=JobStatus.QUEUED, celery_task_id=task_id))
-            db.commit()
+            # task_id를 미리 정해두면 커밋 한 번으로 Job 저장이 끝난다
+            job = Job(**base, status=JobStatus.QUEUED, celery_task_id=str(uuid.uuid4()))
+            db.add(job)
+            created.append(job)
+            queued.append((job, job.celery_task_id))
 
-            compress_pdf_task.apply_async(args=[file_id], task_id=task_id)
-
-            logger.info(f"작업 등록: {file_id} - {original_filename}")
-            job_ids.append(file_id)
-
-        except HTTPException:
-            raise
         except Exception as e:
             logger.error(f"업로드 처리 실패: {upload_file.filename} - {e}")
-            raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            failed.append(UploadFailure(filename=original_filename, error=str(e)))
+
+    if queued:
+        await run_in_threadpool(db.commit)
+        # 커밋 이후에 디스패치해야 워커가 행을 확실히 볼 수 있다
+        for job, task_id in queued:
+            compress_pdf_task.apply_async(args=[job.id], task_id=task_id)
+            logger.info(f"작업 등록: {job.id}")
+
+    if failed and not created:
+        raise HTTPException(status_code=400, detail=failed[0].error)
+
+    message = f"{len(created)}개 파일 업로드 완료"
+    if failed:
+        message += f", {len(failed)}개 실패"
 
     return UploadResponse(
-        job_ids=job_ids,
-        message=f"{len(job_ids)}개 파일 업로드 완료"
+        jobs=[JobResponse.model_validate(job) for job in created],
+        failed=failed,
+        message=message,
     )

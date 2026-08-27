@@ -69,22 +69,22 @@ npm run lint
 
 ### Request Flow
 1. Browser → Next.js frontend (port 3001 or via nginx at 8082)
-2. `POST /api/upload` → FastAPI backend saves file to `/data/uploads/`, creates a `Job` record in SQLite, enqueues `compress_pdf_task` to Redis/Celery
-3. Celery worker picks up the task, runs the compression engine, writes result to `/data/results/`
+2. `POST /api/upload` → FastAPI backend saves file to `/data/uploads/`, creates a `Job` record in SQLite, enqueues `compress_pdf_task` to Redis/Celery, and returns the created `Job` rows directly (per-file failures come back in `failed`, so a bad file no longer aborts the batch)
+3. Celery worker picks up the task, runs the compression engine, writes result to `/data/results/`, and deletes the source upload on success
 4. Frontend subscribes to `GET /api/jobs/{id}/stream` (SSE). Backend emits a snapshot on connect and forwards worker-published progress/status events from Redis pub/sub channel `job:{id}`
 5. On completion, user downloads via `GET /api/jobs/{id}/download`
 
 ### Backend (`backend/app/`)
 - **`main.py`**: FastAPI app setup — CORS, lifespan (DB init + directory creation), router mounting
 - **`core/config.py`**: All configuration via `pydantic-settings`. Reads from `.env`. Key instance: `settings`
-- **`core/redis_client.py`**: Shared Redis client used for distributed locks (dedup) and pub/sub (SSE)
-- **`models/job.py`**: SQLAlchemy `Job` model with `JobStatus` and `CompressionPreset` enums; composite indexes `(user_session, status)` and `(expires_at, created_at)`
+- **`core/redis_client.py`**: Shared Redis clients — sync `redis_client` (dedup locks, worker publish) and `async_redis_client` (SSE pub/sub, so the stream never blocks the event loop)
+- **`models/job.py`**: SQLAlchemy `Job` model with `JobStatus`/`CompressionPreset` enums, the `TERMINAL_STATUSES` set, path properties (`upload_path`/`result_path`/`result_exists`/`download_name`), and one composite index `(expires_at, status)` matching the cleanup scan
 - **`models/database.py`**: SQLite engine with WAL + pragma tuning (cache 32MB, mmap 128MB, busy_timeout 30s), `SessionLocal`, and `db_session()` context manager (auto-commit/rollback/close). DB file lives inside the Docker volume at `/data/`
 - **`api/upload.py`**: Single-pass save + SHA-256 hash; Redis distributed-lock-protected dedup; Celery task dispatch
-- **`api/jobs.py`**: Job CRUD, SSE stream endpoint (`/jobs/{id}/stream`), per-file download, batch ZIP, cancellation via Celery revoke
+- **`api/jobs.py`**: `get_job_or_404` dependency, SSE stream endpoint (`/jobs/{id}/stream`, async Redis pub/sub), per-file download, batch ZIP (built on disk in `TEMP_DIR` and removed by a `BackgroundTask`), cancellation via Celery revoke
 - **`services/file_service.py`**: `save_upload_file_with_hash` (single-pass), PDF validation, filename sanitization
-- **`services/compression_engine.py`**: Strategy pattern — `GhostscriptEngine`, `QPDFEngine`, `PikePDFEngine` all extend `CompressionEngine`. `get_engine()` handles engine lookup and fallback chain (ghostscript → qpdf → pikepdf)
-- **`workers/tasks.py`**: `compress_pdf_task` with DB progress + Redis pub/sub publishing; `cleanup_old_files_task` runs hourly via embedded Beat and batches-and-paginates expired jobs (uploads + results deleted together)
+- **`services/compression_engine.py`**: Strategy pattern — `GhostscriptEngine`, `QPDFEngine`, `PikePDFEngine` all extend `CompressionEngine`, sharing `_run_cli()`/`_cli_compress()`/`_result()`. `compress()` takes `preserve_metadata` explicitly (only pikepdf honors it; gs/qpdf always preserve). `get_engine()` raises `ValueError` on an unknown name and falls back only when the named engine is unavailable. Module-level `get_pdf_info()` is engine-independent
+- **`workers/tasks.py`**: `compress_pdf_task` uses three short DB sessions (start / progress / result) so the long compression never holds the SQLite write lock; `cleanup_old_files_task` runs hourly via embedded Beat and batches-and-paginates expired jobs. `expires_at` is set on success, failure, and cancellation, so every terminal job is eventually reclaimed
 
 ### Compression Presets
 | Preset | DPI | JPEG Quality | Use Case |
@@ -95,12 +95,13 @@ npm run lint
 | prepress | 300 | 90 | High fidelity |
 
 ### Frontend (`frontend/src/`)
-- **`app/page.tsx`**: Single-page app — manages job state, SSE subscription per active job, upload flow
+- **`app/page.tsx`**: Single-page app — manages job state, one SSE subscription per active job (tracked in a ref `Map`, so one job's transition never tears down the others), upload flow
 - **`components/FileUploader.tsx`**: Drag-and-drop using `react-dropzone`
 - **`components/JobCard.tsx`**: Per-job status card with progress bar, download/cancel/delete actions
 - **`components/SettingsPanel.tsx`**: Preset, engine, and metadata options
 - **`lib/api.ts`**: Axios client wrapper; all API calls; `Job` TypeScript interface mirrors the backend schema
-- **`lib/sse.ts`**: `subscribeJob(jobId, onUpdate, onTerminal)` — EventSource wrapper that listens to `snapshot`/`update` events and auto-closes on terminal status
+- **`lib/constants.ts`**: Single home for values shared across the UI — `APP_NAME`, upload limits, `PRESETS`/`ENGINES` (and the `Preset`/`Engine` unions derived from them), `TERMINAL_STATUSES`/`isTerminal`. Kept in manual sync with the backend `Settings`
+- **`lib/sse.ts`**: `subscribeJob(jobId, onUpdate, onTerminal)` — EventSource wrapper that listens to `snapshot`/`update` events, auto-closes on terminal status, and lets the browser reconnect on transient errors (bounded at 5 attempts)
 
 ### Key Environment Variables
 | Variable | Default | Description |
@@ -119,6 +120,5 @@ npm run lint
 - Redis runs without AOF/RDB persistence (queue/results are ephemeral) with `volatile-lru` eviction. Also serves as SSE pub/sub backbone on channels `job:{id}`
 - `pikepdf` is always available (pure Python); `ghostscript` and `qpdf` require system binaries installed in the backend image (multi-stage build)
 - Encrypted PDFs are rejected at both upload-time (worker validation) and task-time
-- Deduplication uses Redis distributed locks on `dedup:{file_hash}:{options_hash}` to prevent race conditions during concurrent uploads of the same file
-- Chunk upload endpoint (`POST /api/upload-chunk`) exists for large files but is not wired into the frontend UI
+- Deduplication uses Redis distributed locks on `dedup:{file_hash}:{options_hash}` to prevent race conditions during concurrent uploads of the same file. The reused result is **hard-linked** under the new job's own name, so cleaning up the original job never orphans the copy
 - Container memory limits (total ~3.0GB): redis 512M, backend 640M, worker 1.5G (embedded Beat), frontend 256M, nginx 64M. Worker auto-restarts when a child exceeds 1.2GB RSS

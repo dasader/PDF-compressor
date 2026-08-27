@@ -77,14 +77,3 @@ async def global_exception_handler(request, exc):
             "detail": str(exc) if settings.ENVIRONMENT == "development" else "오류가 발생했습니다"
         }
     )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.ENVIRONMENT == "development",
-        workers=settings.WEB_CONCURRENCY
-    )

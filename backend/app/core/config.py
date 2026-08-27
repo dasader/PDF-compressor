@@ -12,9 +12,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "production"
     
-    # 서버 설정
-    HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    # 서버 설정 (uvicorn이 WEB_CONCURRENCY를 환경변수로 직접 읽는다)
     WEB_CONCURRENCY: int = 2  # 4→2: 메모리 절약 (4GB 환경용)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
     

@@ -7,6 +7,15 @@ from app.core.config import settings
 from app.models.database import Base
 
 
+def utcnow() -> datetime:
+    """naive UTC 현재 시각.
+
+    SQLite는 DateTime 컬럼에서 tzinfo를 버리고 항상 naive를 돌려주므로,
+    저장·비교를 전부 naive UTC로 통일해야 aware와 섞여 TypeError가 나지 않는다.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class JobStatus(str, Enum):
     """작업 상태"""
     QUEUED = "queued"
@@ -16,9 +25,9 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-#: 더 이상 상태가 바뀌지 않는 작업들 — SSE 종료/취소 거부/정리 대상 판단의 단일 기준
+#: 더 이상 상태가 바뀌지 않는 작업들 — SSE 종료/취소 거부/정리 대상 판단의 단일 기준.
+#: JobStatus가 str Enum이라 "completed" 같은 문자열도 그대로 멤버십 검사가 된다.
 TERMINAL_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED})
-TERMINAL_STATUS_VALUES = frozenset(s.value for s in TERMINAL_STATUSES)
 
 
 class CompressionPreset(str, Enum):
@@ -67,7 +76,7 @@ class Job(Base):
     retry_count = Column(Integer, default=0)
 
     # 타임스탬프
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime, default=utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
@@ -75,10 +84,9 @@ class Job(Base):
     # Celery
     celery_task_id = Column(String(100), nullable=True)
 
-    # user_session/expires_at은 아래 복합 인덱스의 선두 컬럼이라 단일 인덱스가 따로 필요 없다
+    # 유일한 범위 스캔인 정리 작업(expires_at < cutoff AND status IN terminal)에 맞춘 인덱스 하나만 둔다
     __table_args__ = (
-        Index("idx_user_status", "user_session", "status"),
-        Index("idx_expires_created", "expires_at", "created_at"),
+        Index("idx_expires_status", "expires_at", "status"),
     )
 
     @property
@@ -104,6 +112,11 @@ class Job(Base):
     def result_path(self) -> str | None:
         """압축 결과 파일의 절대 경로"""
         return os.path.join(settings.RESULT_DIR, self.result_file) if self.result_file else None
+
+    @property
+    def result_exists(self) -> bool:
+        """결과 파일이 실제로 디스크에 있는가"""
+        return bool(self.result_file) and os.path.exists(self.result_path)
 
     @property
     def download_name(self) -> str:

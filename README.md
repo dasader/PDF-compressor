@@ -10,7 +10,7 @@ Next.js 프론트엔드, FastAPI 백엔드, Celery 비동기 워커로 구성된
 - **드래그 앤 드롭** 파일 업로드 (최대 20개 동시, 파일당 512MB)
 - **4가지 압축 프리셋** (screen / ebook / printer / prepress)
 - **3가지 압축 엔진** 지원 및 자동 폴백 (Ghostscript → qpdf → pikepdf)
-- **실시간 진행률** 표시 및 2초 폴링 상태 갱신
+- **실시간 진행률** 표시 (SSE 스트림, 작업별 구독)
 - **중복 파일 감지** (SHA-256 해시 기반 결과 재사용)
 - **배치 ZIP 다운로드** (여러 파일 동시 다운로드)
 - **24시간 자동 파일 만료** 및 정리 스케줄러
@@ -30,8 +30,8 @@ Nginx (port 8082)  ────────────────────�
   ▼ /api/*                                       ▼ /*
 FastAPI Backend (port 8001)            Next.js Frontend (port 3001)
   │
-  ├── SQLite (job 메타데이터)
-  ├── Redis (Celery 브로커 & 결과 저장)
+  ├── SQLite (job 메타데이터, WAL)
+  ├── Redis (Celery 브로커 + SSE pub/sub)
   │
   ▼
 Celery Worker (압축 실행)
@@ -40,14 +40,14 @@ Celery Worker (압축 실행)
   ├── qpdf
   └── pikepdf
 
-Celery Beat (매시간 만료 파일 정리)
+Celery Beat (worker에 내장, 매시간 만료 파일 정리)
 ```
 
 ### 요청 흐름
 
 1. 브라우저 → `POST /api/upload` → 파일 저장 + Job DB 레코드 생성 + Celery 태스크 큐 등록
 2. Celery Worker → PDF 압축 실행 → `/data/results/` 저장
-3. 프론트엔드 → 2초마다 `GET /api/jobs/{id}` 폴링 → 완료 시 다운로드 버튼 활성화
+3. 프론트엔드 → `GET /api/jobs/{id}/stream` (SSE) 구독 → 접속 즉시 스냅샷, 이후 Redis pub/sub 채널 `job:{id}`의 진행률·상태 이벤트 수신
 4. `GET /api/jobs/{id}/download` → 압축 파일 전송
 
 ---
@@ -124,9 +124,7 @@ docker compose down -v
 | `ENABLE_ENGINE_FALLBACK` | `true` | 엔진 자동 폴백 |
 | `LOG_LEVEL` | `WARNING` | 로그 레벨 |
 | `CORS_ORIGINS` | _(콤마 구분)_ | 허용 CORS 출처 |
-| `ENABLE_ANTIVIRUS` | `false` | ClamAV 스캔 활성화 |
-| `WEBHOOK_ENABLED` | `false` | 완료 웹훅 활성화 |
-| `WEBHOOK_URL` | — | 웹훅 수신 URL |
+| `ENABLE_ANTIVIRUS` | `false` | ClamAV 스캔 활성화 (별도 clamav 서비스 필요) |
 
 ---
 
@@ -136,7 +134,7 @@ docker compose down -v
 |--------|------|------|
 | `POST` | `/api/upload` | PDF 업로드 및 압축 작업 등록 |
 | `GET` | `/api/jobs/{id}` | 작업 상태 조회 |
-| `GET` | `/api/jobs` | 작업 목록 조회 |
+| `GET` | `/api/jobs/{id}/stream` | 작업 상태 SSE 스트림 |
 | `GET` | `/api/jobs/{id}/download` | 압축 파일 다운로드 |
 | `POST` | `/api/jobs/batch/download` | 여러 파일 ZIP 다운로드 |
 | `POST` | `/api/jobs/{id}/cancel` | 작업 취소 |
@@ -174,17 +172,20 @@ PDF-compressor/
 │   ├── tests/                  # pytest 테스트
 │   ├── Dockerfile
 │   ├── entrypoint.sh
-│   ├── worker-entrypoint.sh
-│   ├── beat-entrypoint.sh
+│   ├── worker-entrypoint.sh    # Celery worker + 내장 Beat
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── app/
-│   │   │   └── page.tsx        # 메인 페이지 (업로드 + 폴링)
-│   │   └── components/
-│   │       ├── FileUploader.tsx # 드래그 앤 드롭 업로더
-│   │       ├── JobCard.tsx      # 작업 카드 (진행률/다운로드)
-│   │       └── SettingsPanel.tsx# 프리셋/엔진 설정
+│   │   │   └── page.tsx        # 메인 페이지 (업로드 + SSE 구독)
+│   │   ├── components/
+│   │   │   ├── FileUploader.tsx # 드래그 앤 드롭 업로더
+│   │   │   ├── JobCard.tsx      # 작업 카드 (진행률/다운로드)
+│   │   │   └── SettingsPanel.tsx# 프리셋/엔진 설정
+│   │   └── lib/
+│   │       ├── api.ts           # API 클라이언트
+│   │       ├── sse.ts           # SSE 구독 헬퍼
+│   │       └── constants.ts     # 프리셋/엔진/한도 상수
 │   └── Dockerfile
 ├── docker-compose.yml
 ├── nginx.conf

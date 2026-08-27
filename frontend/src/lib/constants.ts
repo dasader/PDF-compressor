@@ -24,3 +24,9 @@ export const ENGINES = [
 
 export type Preset = (typeof PRESETS)[number]['value'];
 export type Engine = (typeof ENGINES)[number]['value'];
+
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled'];
+
+export const isTerminal = (status: JobStatus) => TERMINAL_STATUSES.includes(status);

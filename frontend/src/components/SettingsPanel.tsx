@@ -8,7 +8,6 @@ export interface CompressionSettings {
   preset: Preset;
   engine: Engine;
   preserveMetadata: boolean;
-  preserveOcr: boolean;
 }
 
 interface SettingsPanelProps {
@@ -85,7 +84,7 @@ function Checkbox({
   );
 }
 
-export default function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
+function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
       <div className="flex items-center space-x-2 mb-4">
@@ -123,15 +122,12 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
             >
               메타데이터 보존 (저작권, 태그 등)
             </Checkbox>
-            <Checkbox
-              checked={settings.preserveOcr}
-              onToggle={(preserveOcr) => onChange({ preserveOcr })}
-            >
-              OCR 텍스트 레이어 보존 (스캔 PDF)
-            </Checkbox>
           </div>
         </div>
       </div>
     </div>
   );
 }
+
+// SSE 진행률 틱마다 9개 입력을 다시 그리지 않도록 메모이즈
+export default React.memo(SettingsPanel);
