@@ -28,7 +28,7 @@ Browser
 Nginx (port 8106)  ──────────────────────────────┐
   │                                              │
   ▼ /api/*                                       ▼ /*
-FastAPI Backend (port 8006)            Next.js Frontend (port 8156)
+FastAPI Backend (내부)                  Next.js Frontend (내부)
   │
   ├── SQLite (job 메타데이터, WAL)
   ├── Redis (Celery 브로커 + SSE pub/sub)
@@ -91,10 +91,9 @@ docker compose logs -f
 
 | 서비스 | URL |
 |--------|-----|
-| **프론트엔드** | http://localhost:8156 |
-| **백엔드 API** | http://localhost:8006 |
+| **백엔드 API** | http://localhost:8106/api |
 | **Nginx 통합** | http://localhost:8106 |
-| **API 문서** | http://localhost:8006/docs |
+| **API 문서** | http://localhost:8106/docs |
 
 ### 중지
 
@@ -141,7 +140,7 @@ docker compose down -v
 | `GET` | `/api/healthz` | 헬스체크 |
 | `GET` | `/api/readyz` | 준비 상태 확인 |
 
-전체 API 명세: http://localhost:8006/docs (Swagger UI)
+전체 API 명세: http://localhost:8106/docs (Swagger UI)
 
 ---
 

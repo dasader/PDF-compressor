@@ -1,5 +1,7 @@
 # 호스트 포트는 ../PORTS.md 규칙을 따른다 — 이 서비스는 NN=06
-#   backend 8006 / nginx(공개 진입점) 8106 / frontend 8156 / redis 6306
+#   공개 진입점 nginx만 호스트에 노출한다 (8106).
+#   backend/frontend/redis는 컨테이너 네트워크 안에서만 접근되므로 포트를 열지 않는다.
+#   디버깅이 필요하면 `docker compose exec <서비스>` 를 쓴다.
 
 # backend와 worker가 공유하는 빌드/환경/네트워크 설정
 x-backend-base: &backend-base
@@ -33,8 +35,6 @@ services:
       --save ""
       --maxmemory 384mb
       --maxmemory-policy volatile-lru
-    ports:
-      - "6306:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -57,9 +57,7 @@ services:
       <<: *backend-env
       WEB_CONCURRENCY: 2
       MAX_UPLOAD_SIZE_MB: 512
-      CORS_ORIGINS: http://localhost:8156,http://localhost:8006,http://localhost:8106,http://localhost
-    ports:
-      - "8006:8000"
+      CORS_ORIGINS: http://localhost:8106,http://localhost
     healthcheck:
       # start_period가 기동을 덮으므로 이후에는 자주 찌를 이유가 없다 (파이썬 기동 비용 절감)
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/readyz', timeout=2)"]
@@ -111,8 +109,6 @@ services:
     container_name: pdf-compressor-frontend
     environment:
       - NEXT_PUBLIC_API_URL=
-    ports:
-      - "8156:3000"
     depends_on:
       - backend
     networks:
