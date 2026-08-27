@@ -1,4 +1,8 @@
-"""설정 파일 정합성 테스트"""
+"""env.example ↔ Settings 정합성 테스트.
+
+env.example은 실행에 쓰이지 않는 참조표지만, Settings와 어긋나면
+문서가 존재하지 않는 설정을 안내하게 되므로 여기서 막는다.
+"""
 import pathlib
 
 import pytest
@@ -25,17 +29,13 @@ def _env_keys() -> set:
 
 
 def test_env_example_keys_match_settings():
-    """env.example의 모든 키가 Settings에 존재해야 한다.
-
-    pydantic-settings는 여분 키를 거부하므로, 어긋나면 문서화된
-    `cp env.example .env` 절차가 앱 기동을 깨뜨린다.
-    """
+    """env.example의 모든 키가 Settings에 존재해야 한다 (없는 설정을 안내하지 않도록)."""
     unknown = _env_keys() - set(Settings.model_fields)
     assert not unknown, f"env.example에 Settings에 없는 키가 있다: {sorted(unknown)}"
 
 
 def test_env_example_actually_loads(tmp_path):
-    """env.example을 .env로 그대로 복사해도 Settings가 만들어져야 한다"""
+    """참조표의 값들이 Settings의 타입 검증을 실제로 통과해야 한다"""
     env_file = tmp_path / ".env"
     env_file.write_text(ENV_EXAMPLE.read_text())
 
