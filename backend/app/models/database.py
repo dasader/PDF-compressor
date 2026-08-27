@@ -28,7 +28,8 @@ def _sqlite_pragma(dbapi_conn, _):
     cur.close()
 
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# expire_on_commit=False: 커밋 직후 응답을 만들 때 행마다 재조회하지 않는다
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 
 

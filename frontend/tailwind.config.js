@@ -1,7 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
-    './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
   ],
@@ -21,29 +20,9 @@ module.exports = {
           900: '#1e3a8a',
         },
       },
-      animation: {
-        'spin-slow': 'spin 3s linear infinite',
-      },
     },
   },
   plugins: [],
-  darkMode: 'class',
+  // globals.css가 prefers-color-scheme로 배경을 바꾸므로 dark: 유틸리티도 같은 기준을 쓴다
+  darkMode: 'media',
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging import setup_logging
-from app.models.database import engine, Base
+from app.init_db import init_db
 from app.api import upload, jobs, health
 
 # 로깅 설정
@@ -20,28 +20,9 @@ async def lifespan(app: FastAPI):
     # 시작
     logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 시작")
     
-    # 데이터베이스 테이블 생성 (이미 존재하는 경우 무시)
-    try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("데이터베이스 초기화 완료")
-    except Exception as e:
-        logger.warning(f"데이터베이스 초기화 중 경고: {e}")
-        logger.info("데이터베이스 테이블이 이미 존재합니다")
-
-    # 복합 인덱스 보장 (기존 DB 대상)
-    try:
-        from sqlalchemy import text
-        with engine.begin() as conn:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_status ON jobs (user_session, status)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_expires_created ON jobs (expires_at, created_at)"))
-        logger.info("복합 인덱스 확인 완료")
-    except Exception as e:
-        logger.warning(f"인덱스 생성 중 경고: {e}")
-
-    # 디렉토리 생성
+    init_db()
     settings.ensure_directories()
-    logger.info("디렉토리 생성 완료")
-    
+
     yield
     
     # 종료
@@ -55,8 +36,6 @@ app = FastAPI(
     description="대용량 PDF 파일 압축 웹 애플리케이션",
     lifespan=lifespan
 )
-
-# 업로드 크기 제한 설정 (FastAPI는 기본적으로 큰 파일을 지원)
 
 # CORS 설정
 app.add_middleware(
@@ -98,24 +77,3 @@ async def global_exception_handler(request, exc):
             "detail": str(exc) if settings.ENVIRONMENT == "development" else "오류가 발생했습니다"
         }
     )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.ENVIRONMENT == "development",
-        workers=settings.WEB_CONCURRENCY
-    )
-
-
-
-
-
-
-
-
-
-

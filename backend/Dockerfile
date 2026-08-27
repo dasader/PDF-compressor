@@ -42,8 +42,7 @@ RUN chmod +x /entrypoint.sh /worker-entrypoint.sh && \
     chown -R appuser:appuser /data
 USER appuser
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api/healthz')"
+# 헬스체크는 docker-compose.yml이 서비스별로 정의한다
 
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]

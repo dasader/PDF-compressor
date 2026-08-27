@@ -1,5 +1,5 @@
 """애플리케이션 설정"""
-from typing import List, Optional
+from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
@@ -12,12 +12,9 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "production"
     
-    # 서버 설정
-    HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    # 서버 설정 (uvicorn이 WEB_CONCURRENCY를 환경변수로 직접 읽는다)
     WEB_CONCURRENCY: int = 2  # 4→2: 메모리 절약 (4GB 환경용)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
-    API_URL: str = "http://backend:8000"  # Docker 환경용 기본값 (환경변수로 오버라이드 가능)
     
     # 업로드 설정
     MAX_UPLOAD_SIZE_MB: int = 512  # 2048→512: 메모리 절약 (4GB 환경용)
@@ -33,7 +30,6 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
     
     # Celery 워커 설정
-    MAX_WORKERS: int = 4
     WORKER_CONCURRENCY: int = 1  # 2→1: 동시 작업 1개만 (4GB 환경용)
     TASK_TIMEOUT_SECONDS: int = 900
     TASK_MAX_RETRIES: int = 3
@@ -43,25 +39,15 @@ class Settings(BaseSettings):
     CLEANUP_INTERVAL_HOURS: int = 1
     
     # 보안 설정
-    SECRET_KEY: str = "change-this-to-random-secret-key-in-production"
     ENABLE_ANTIVIRUS: bool = False
     CLAMAV_HOST: str = "clamav"
     CLAMAV_PORT: int = 3310
-    
-    # S3 설정
-    ENABLE_S3: bool = False
-    S3_ENDPOINT: Optional[str] = None
-    S3_BUCKET: Optional[str] = None
-    S3_ACCESS_KEY: Optional[str] = None
-    S3_SECRET_KEY: Optional[str] = None
     
     # 로깅
     LOG_LEVEL: str = "WARNING"  # INFO→WARNING: 로그 감소로 메모리 절약
     LOG_FORMAT: str = "json"
     
     # PDF 압축 설정
-    DEFAULT_PRESET: str = "ebook"
-    DEFAULT_ENGINE: str = "ghostscript"
     ENABLE_ENGINE_FALLBACK: bool = True
     
     # 파일 해시 캐싱
@@ -93,14 +79,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
-
-
-
-
-
-
-
-
-

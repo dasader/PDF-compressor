@@ -21,29 +21,6 @@ clamd==1.0.2
 
 # Database (SQLite for job metadata)
 sqlalchemy==2.0.25
-alembic==1.13.1
 
 # Monitoring & Logging
 python-json-logger==2.0.7
-
-# Utilities
-shortuuid==1.0.11
-
-# Testing
-pytest==7.4.4
-pytest-asyncio==0.23.3
-pytest-cov==4.1.0
-faker==22.0.0
-
-# HTTP client (for healthcheck)
-requests==2.31.0
-
-
-
-
-
-
-
-
-
-

@@ -1,8 +1,29 @@
+# backend와 worker가 공유하는 빌드/환경/네트워크 설정
+x-backend-base: &backend-base
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  volumes:
+    - pdf-data:/data
+  networks:
+    - pdf-network
+  restart: unless-stopped
+
+x-backend-env: &backend-env
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  UPLOAD_DIR: /data/uploads
+  RESULT_DIR: /data/results
+  TEMP_DIR: /data/temp
+  TASK_TIMEOUT_SECONDS: 900
+  LOG_LEVEL: WARNING
+
 services:
   # Redis (메시지 브로커 & 백엔드)
   redis:
     image: redis:7-alpine
     container_name: pdf-compressor-redis
+    # 영속화를 끈 상태라 볼륨이 필요 없다 (큐/결과는 휘발성)
     command: >
       redis-server
       --appendonly no
@@ -11,8 +32,6 @@ services:
       --maxmemory-policy volatile-lru
     ports:
       - "6379:6379"
-    volumes:
-      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -29,39 +48,25 @@ services:
 
   # 백엔드 (FastAPI)
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    <<: *backend-base
     container_name: pdf-compressor-backend
     environment:
-      - HOST=0.0.0.0
-      - PORT=8000
-      - WEB_CONCURRENCY=2
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - UPLOAD_DIR=/data/uploads
-      - RESULT_DIR=/data/results
-      - TEMP_DIR=/data/temp
-      - MAX_UPLOAD_SIZE_MB=512
-      - TASK_TIMEOUT_SECONDS=900
-      - LOG_LEVEL=WARNING
-      - CORS_ORIGINS=http://localhost:3001,http://localhost:8001,http://localhost:8082,http://localhost
+      <<: *backend-env
+      WEB_CONCURRENCY: 2
+      MAX_UPLOAD_SIZE_MB: 512
+      CORS_ORIGINS: http://localhost:3001,http://localhost:8001,http://localhost:8082,http://localhost
     ports:
       - "8001:8000"
-    volumes:
-      - pdf-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/readyz', timeout=2).raise_for_status()"]
-      interval: 10s
+      # start_period가 기동을 덮으므로 이후에는 자주 찌를 이유가 없다 (파이썬 기동 비용 절감)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/readyz', timeout=2)"]
+      interval: 30s
       timeout: 5s
-      retries: 30
-      start_period: 10s
+      retries: 5
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
-    networks:
-      - pdf-network
-    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -69,27 +74,17 @@ services:
         reservations:
           memory: 256M
 
-  # Celery 워커
+  # Celery 워커 (Beat 내장)
   worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    <<: *backend-base
     container_name: pdf-compressor-worker
     entrypoint: ["/worker-entrypoint.sh"]
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - UPLOAD_DIR=/data/uploads
-      - RESULT_DIR=/data/results
-      - TEMP_DIR=/data/temp
-      - TASK_TIMEOUT_SECONDS=900
-      - LOG_LEVEL=WARNING
-      - API_URL=http://backend:8000
-    volumes:
-      - pdf-data:/data
+      <<: *backend-env
     healthcheck:
+      # celery inspect는 앱 전체를 import하므로 비싸다 — 간격을 넉넉히 둔다
       test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout 5"]
-      interval: 30s
+      interval: 60s
       timeout: 20s
       retries: 3
       start_period: 30s
@@ -98,9 +93,6 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
-    networks:
-      - pdf-network
-    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -152,7 +144,6 @@ services:
           memory: 16M
 
 volumes:
-  redis-data:
   pdf-data:
 
 networks:
