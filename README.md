@@ -25,10 +25,10 @@ Next.js 프론트엔드, FastAPI 백엔드, Celery 비동기 워커로 구성된
 Browser
   │
   ▼
-Nginx (port 8082)  ──────────────────────────────┐
+Nginx (port 8106)  ──────────────────────────────┐
   │                                              │
   ▼ /api/*                                       ▼ /*
-FastAPI Backend (port 8001)            Next.js Frontend (port 3001)
+FastAPI Backend (port 8006)            Next.js Frontend (port 8156)
   │
   ├── SQLite (job 메타데이터, WAL)
   ├── Redis (Celery 브로커 + SSE pub/sub)
@@ -91,10 +91,10 @@ docker compose logs -f
 
 | 서비스 | URL |
 |--------|-----|
-| **프론트엔드** | http://localhost:3001 |
-| **백엔드 API** | http://localhost:8001 |
-| **Nginx 통합** | http://localhost:8082 |
-| **API 문서** | http://localhost:8001/docs |
+| **프론트엔드** | http://localhost:8156 |
+| **백엔드 API** | http://localhost:8006 |
+| **Nginx 통합** | http://localhost:8106 |
+| **API 문서** | http://localhost:8006/docs |
 
 ### 중지
 
@@ -141,7 +141,7 @@ docker compose down -v
 | `GET` | `/api/healthz` | 헬스체크 |
 | `GET` | `/api/readyz` | 준비 상태 확인 |
 
-전체 API 명세: http://localhost:8001/docs (Swagger UI)
+전체 API 명세: http://localhost:8006/docs (Swagger UI)
 
 ---
 

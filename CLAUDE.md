@@ -22,10 +22,11 @@ docker compose logs -f worker
 docker compose up -d --build
 ```
 
-Service ports:
-- Frontend: `http://localhost:3001`
-- Backend API: `http://localhost:8001`
-- Nginx (unified entry): `http://localhost:8082`
+Service ports — this service is **NN=06** in `../PORTS.md` (the single source for host ports; `대역 + NN`):
+- Nginx (unified entry): `http://localhost:8106`
+- Backend API: `http://localhost:8006`
+- Frontend: `http://localhost:8156`
+- Redis: `localhost:6306`
 
 ## Backend Development
 
@@ -68,7 +69,7 @@ npm run lint
 ## Architecture
 
 ### Request Flow
-1. Browser → Next.js frontend (port 3001 or via nginx at 8082)
+1. Browser → Next.js frontend (port 8156, or via nginx at 8106)
 2. `POST /api/upload` → FastAPI backend saves file to `/data/uploads/`, creates a `Job` record in SQLite, enqueues `compress_pdf_task` to Redis/Celery, and returns the created `Job` rows directly (per-file failures come back in `failed`, so a bad file no longer aborts the batch)
 3. Celery worker picks up the task, runs the compression engine, writes result to `/data/results/`, and deletes the source upload on success
 4. Frontend subscribes to `GET /api/jobs/{id}/stream` (SSE). Backend emits a snapshot on connect and forwards worker-published progress/status events from Redis pub/sub channel `job:{id}`
