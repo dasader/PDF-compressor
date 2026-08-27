@@ -3,14 +3,13 @@ import os
 import pytest
 from app.services.compression_engine import (
     GhostscriptEngine,
-    QPDFEngine,
     PikePDFEngine,
     get_engine,
     get_pdf_info,
 )
 from app.models.job import CompressionPreset
 
-ENGINES = [GhostscriptEngine(), QPDFEngine(), PikePDFEngine()]
+ENGINES = [GhostscriptEngine(), PikePDFEngine()]
 
 
 @pytest.fixture
@@ -40,7 +39,6 @@ def test_get_engine_unknown_name_raises():
 def test_get_engine_falls_back_when_unavailable(monkeypatch):
     """설치되지 않은 엔진을 요청하면 사용 가능한 엔진으로 폴백한다"""
     monkeypatch.setattr(GhostscriptEngine, 'is_available', lambda self: False)
-    monkeypatch.setattr(QPDFEngine, 'is_available', lambda self: False)
 
     engine = get_engine('ghostscript')
     assert isinstance(engine, PikePDFEngine)
@@ -104,3 +102,8 @@ def test_pikepdf_honors_preserve_metadata(written_pdf):
     with pikepdf.open(output_path) as pdf:
         assert '/Title' not in pdf.docinfo
         assert pdf.open_metadata().get('dc:title') is None
+
+
+def test_removed_qpdf_name_falls_back_to_pikepdf():
+    """제거된 qpdf 이름으로 들어오는 기존 Job/캐시된 프론트 요청도 처리한다"""
+    assert isinstance(get_engine('qpdf'), PikePDFEngine)

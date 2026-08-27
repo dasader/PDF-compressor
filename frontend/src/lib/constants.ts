@@ -17,9 +17,16 @@ export const PRESETS = [
 ] as const;
 
 export const ENGINES = [
-  { value: 'ghostscript', label: 'Ghostscript', description: '강력한 압축, 이미지 최적화' },
-  { value: 'qpdf', label: 'qpdf', description: '구조 최적화, 빠른 처리' },
-  { value: 'pikepdf', label: 'pikepdf', description: '기본 압축, 안정적' },
+  {
+    value: 'ghostscript',
+    label: '최대 압축 (Ghostscript)',
+    description: '스캔 문서 권장 · 이미지 해상도를 낮춰 화질이 일부 떨어집니다',
+  },
+  {
+    value: 'pikepdf',
+    label: '무손실 (pikepdf)',
+    description: '원본 화질 유지 · 텍스트 문서에 효과적이며 스캔본은 거의 줄지 않습니다',
+  },
 ] as const;
 
 export type Preset = (typeof PRESETS)[number]['value'];

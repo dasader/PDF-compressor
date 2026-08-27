@@ -71,7 +71,7 @@ def test_reused_result_is_its_own_file(db, completed_source):
 def test_different_options_do_not_reuse(db, completed_source):
     """옵션이 다르면 재사용하지 않는다"""
     assert _reuse_completed_result(db, _base(preset='screen')) is None
-    assert _reuse_completed_result(db, _base(engine='qpdf')) is None
+    assert _reuse_completed_result(db, _base(engine='pikepdf')) is None
     assert _reuse_completed_result(db, _base(preserve_metadata=False)) is None
 
 

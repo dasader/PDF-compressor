@@ -9,7 +9,7 @@ Next.js 프론트엔드, FastAPI 백엔드, Celery 비동기 워커로 구성된
 
 - **드래그 앤 드롭** 파일 업로드 (최대 20개 동시, 파일당 512MB)
 - **4가지 압축 프리셋** (screen / ebook / printer / prepress)
-- **3가지 압축 엔진** 지원 및 자동 폴백 (Ghostscript → qpdf → pikepdf)
+- **2가지 압축 엔진** — 최대 압축(Ghostscript, 손실) / 무손실(pikepdf), 자동 폴백
 - **실시간 진행률** 표시 (SSE 스트림, 작업별 구독)
 - **중복 파일 감지** (SHA-256 해시 기반 결과 재사용)
 - **배치 ZIP 다운로드** (여러 파일 동시 다운로드)
@@ -36,9 +36,8 @@ FastAPI Backend (port 8001)            Next.js Frontend (port 3001)
   ▼
 Celery Worker (압축 실행)
   │
-  ├── Ghostscript
-  ├── qpdf
-  └── pikepdf
+  ├── Ghostscript (손실 — 이미지 다운샘플)
+  └── pikepdf (무손실 — 구조 최적화)
 
 Celery Beat (worker에 내장, 매시간 만료 파일 정리)
 ```
@@ -243,7 +242,7 @@ docker compose up -d --build
 | 프론트엔드 | Next.js 14, TypeScript, Tailwind CSS, react-dropzone |
 | 백엔드 | FastAPI, SQLAlchemy, Pydantic v2, SQLite |
 | 태스크 큐 | Celery 5, Redis 7 |
-| PDF 압축 | Ghostscript, qpdf, pikepdf |
+| PDF 압축 | Ghostscript, pikepdf |
 | 인프라 | Docker, Docker Compose, Nginx |
 
 ---

@@ -88,7 +88,7 @@ async def upload_files(
 
     - **files**: 업로드할 PDF 파일들 (최대 20개)
     - **preset**: 압축 프리셋 (screen/ebook/printer/prepress)
-    - **engine**: 압축 엔진 (ghostscript/qpdf/pikepdf)
+    - **engine**: 압축 엔진 (ghostscript=최대 압축 / pikepdf=무손실)
     - **preserve_metadata**: 메타데이터 보존 여부
     - **user_session**: 사용자 세션 ID (옵션)
 

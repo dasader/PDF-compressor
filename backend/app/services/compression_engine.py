@@ -5,7 +5,7 @@ import subprocess
 import shutil
 from abc import ABC, abstractmethod
 from functools import lru_cache
-from typing import Dict, Any, List
+from typing import Dict, Any
 import pikepdf
 from app.models.job import CompressionPreset
 from app.core.config import settings
@@ -61,22 +61,6 @@ def _result(engine: str, input_path: str, output_path: str) -> Dict[str, Any]:
     }
 
 
-def _cli_compress(engine: str, cmd: List[str], input_path: str, output_path: str) -> Dict[str, Any]:
-    """외부 CLI 엔진의 공통 흐름: 실행 → 결과 요약. 실패는 RuntimeError로 정규화한다."""
-    logger.info(f"{engine} 명령 실행: {' '.join(cmd)}")
-    try:
-        subprocess.run(cmd, capture_output=True, text=True,
-                       timeout=settings.TASK_TIMEOUT_SECONDS, check=True)
-    except subprocess.TimeoutExpired:
-        logger.error(f"{engine} 타임아웃")
-        raise RuntimeError(f"{engine} 작업 시간 초과")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"{engine} 실패: {e.stderr}")
-        raise RuntimeError(f"{engine} 압축 실패: {e.stderr}")
-
-    return _result(engine, input_path, output_path)
-
-
 @lru_cache(maxsize=None)
 def _which(binary: str) -> bool:
     """실행 파일 존재 여부. 프로세스 수명 동안 바뀌지 않으므로 캐시한다."""
@@ -96,7 +80,7 @@ class CompressionEngine(ABC):
     ) -> Dict[str, Any]:
         """PDF를 압축하고 결과 요약을 반환한다.
 
-        preserve_metadata를 실제로 반영하는 것은 pikepdf뿐이다 (gs/qpdf는 항상 보존).
+        preserve_metadata를 실제로 반영하는 것은 pikepdf뿐이다 (Ghostscript는 항상 보존).
         """
 
     @abstractmethod
@@ -146,28 +130,18 @@ class GhostscriptEngine(CompressionEngine):
             input_path,
         ]
 
-        return _cli_compress('ghostscript', cmd, input_path, output_path)
+        logger.info(f"ghostscript 명령 실행: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=settings.TASK_TIMEOUT_SECONDS, check=True)
+        except subprocess.TimeoutExpired:
+            logger.error("ghostscript 타임아웃")
+            raise RuntimeError("ghostscript 작업 시간 초과")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ghostscript 실패: {e.stderr}")
+            raise RuntimeError(f"ghostscript 압축 실패: {e.stderr}")
 
-
-class QPDFEngine(CompressionEngine):
-    """qpdf 최적화 엔진"""
-
-    def is_available(self) -> bool:
-        return _which('qpdf')
-
-    def compress(self, input_path, output_path, preset, preserve_metadata=True):
-        cmd = [
-            'qpdf',
-            '--optimize-images',
-            '--compression-level=9',
-            '--linearize',
-            '--object-streams=generate',
-            '--remove-unreferenced-resources=yes',
-            input_path,
-            output_path,
-        ]
-
-        return _cli_compress('qpdf', cmd, input_path, output_path)
+        return _result('ghostscript', input_path, output_path)
 
 
 class PikePDFEngine(CompressionEngine):
@@ -201,15 +175,23 @@ class PikePDFEngine(CompressionEngine):
 
 
 _ENGINES = {
-    'ghostscript': GhostscriptEngine(),
-    'qpdf': QPDFEngine(),
-    'pikepdf': PikePDFEngine(),
+    'ghostscript': GhostscriptEngine(),   # 최대 압축 (이미지 다운샘플 — 손실)
+    'pikepdf': PikePDFEngine(),           # 무손실 (구조만 최적화)
 }
+
+#: 제거된 엔진 이름 → 대체 엔진. 기존 DB 레코드나 캐시된 프론트가 보내는 값을 받아준다.
+#: qpdf는 어떤 문서 유형에서도 pikepdf보다 낫지 않아 제거했다.
+_ALIASES = {'qpdf': 'pikepdf'}
 
 
 def get_engine(engine_name: str) -> CompressionEngine:
     """엔진 인스턴스 반환. 이름이 틀리면 ValueError, 설치가 안 됐으면 폴백한다."""
-    engine = _ENGINES.get(engine_name.lower())
+    name = engine_name.lower()
+    if name in _ALIASES:
+        logger.info(f"제거된 엔진 {name} → {_ALIASES[name]}로 대체")
+        name = _ALIASES[name]
+
+    engine = _ENGINES.get(name)
     if not engine:
         raise ValueError(f"알 수 없는 엔진: {engine_name}")
 
