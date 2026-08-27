@@ -33,6 +33,23 @@ def isolated_dirs(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def stub_external(monkeypatch):
+    """Redis/Celery 없이도 테스트가 돌도록 두 접점만 막는다.
+
+    dedup 락의 실제 동작과 태스크 디스패치는 실환경 E2E가 따로 검증한다.
+    """
+    from contextlib import contextmanager
+    import app.api.upload as upload_mod
+
+    @contextmanager
+    def fake_lock(*args, **kwargs):
+        yield True
+
+    monkeypatch.setattr(upload_mod.redis_client, "lock", fake_lock)
+    monkeypatch.setattr(upload_mod.compress_pdf_task, "apply_async", lambda *a, **k: None)
+
+
 @pytest.fixture(scope="function")
 def db():
     """테스트 데이터베이스 세션"""

@@ -1,7 +1,7 @@
 """작업 모델"""
 import os
 from enum import Enum
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import Column, String, Integer, Float, DateTime, Text, Boolean, Enum as SQLEnum, Index
 from app.core.config import settings
 from app.models.database import Base
@@ -14,6 +14,11 @@ def utcnow() -> datetime:
     저장·비교를 전부 naive UTC로 통일해야 aware와 섞여 TypeError가 나지 않는다.
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def expiry() -> datetime:
+    """보관 기간이 끝나는 시각 — 성공/실패/취소 모두 이 값을 채워야 정리 대상이 된다."""
+    return utcnow() + timedelta(hours=settings.RETENTION_HOURS)
 
 
 class JobStatus(str, Enum):
@@ -65,7 +70,6 @@ class Job(Base):
 
     # 메타데이터 옵션
     preserve_metadata = Column(Boolean, default=True)
-    preserve_ocr = Column(Boolean, default=True)
 
     # 결과
     result_file = Column(String(500), nullable=True)

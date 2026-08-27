@@ -24,6 +24,3 @@ sqlalchemy==2.0.25
 
 # Monitoring & Logging
 python-json-logger==2.0.7
-
-# HTTP client (for healthcheck)
-requests==2.31.0

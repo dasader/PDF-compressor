@@ -62,13 +62,7 @@ def _result(engine: str, input_path: str, output_path: str) -> Dict[str, Any]:
 
 
 def _cli_compress(engine: str, cmd: List[str], input_path: str, output_path: str) -> Dict[str, Any]:
-    """외부 CLI 엔진의 공통 흐름: 실행 → 결과 요약."""
-    _run_cli(cmd, engine)
-    return _result(engine, input_path, output_path)
-
-
-def _run_cli(cmd: List[str], engine: str) -> None:
-    """외부 압축 CLI 실행. 타임아웃/실패를 RuntimeError로 정규화한다."""
+    """외부 CLI 엔진의 공통 흐름: 실행 → 결과 요약. 실패는 RuntimeError로 정규화한다."""
     logger.info(f"{engine} 명령 실행: {' '.join(cmd)}")
     try:
         subprocess.run(cmd, capture_output=True, text=True,
@@ -79,6 +73,8 @@ def _run_cli(cmd: List[str], engine: str) -> None:
     except subprocess.CalledProcessError as e:
         logger.error(f"{engine} 실패: {e.stderr}")
         raise RuntimeError(f"{engine} 압축 실패: {e.stderr}")
+
+    return _result(engine, input_path, output_path)
 
 
 @lru_cache(maxsize=None)

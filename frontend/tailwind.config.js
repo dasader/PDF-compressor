@@ -23,5 +23,6 @@ module.exports = {
     },
   },
   plugins: [],
-  darkMode: 'class',
+  // globals.css가 prefers-color-scheme로 배경을 바꾸므로 dark: 유틸리티도 같은 기준을 쓴다
+  darkMode: 'media',
 }

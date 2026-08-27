@@ -3,7 +3,6 @@ import os
 import uuid
 import hashlib
 import logging
-from datetime import timedelta
 from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.concurrency import run_in_threadpool
@@ -13,7 +12,7 @@ from app.core.config import settings
 from app.core.schemas import JobResponse, UploadFailure, UploadResponse
 from app.core.redis_client import redis_client
 from app.models.database import get_db
-from app.models.job import Job, JobStatus, CompressionPreset, utcnow
+from app.models.job import Job, JobStatus, CompressionPreset, expiry, utcnow
 from app.services.file_service import FileService
 from app.workers.tasks import compress_pdf_task
 from redis.exceptions import LockError
@@ -60,7 +59,7 @@ def _reuse_completed_result(db: Session, base: dict) -> Optional[Job]:
                 result_file=f"compressed_{base['filename']}",
                 progress=1.0,
                 completed_at=now,
-                expires_at=now + timedelta(hours=settings.RETENTION_HOURS),
+                expires_at=expiry(),
             )
             os.link(existing.result_path, job.result_path)
 

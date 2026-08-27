@@ -2,21 +2,16 @@
 import json
 import logging
 import os
-from datetime import timedelta
 from typing import Dict, Any
 from app.workers.celery_app import celery_app
 from app.core.config import settings
 from app.core.redis_client import redis_client
 from app.models.database import db_session
-from app.models.job import Job, JobStatus, TERMINAL_STATUSES, utcnow
+from app.models.job import Job, JobStatus, TERMINAL_STATUSES, expiry, utcnow
 from app.services.compression_engine import get_engine, get_pdf_info
 from app.services.file_service import FileService, delete_job_files
 
 logger = logging.getLogger(__name__)
-
-
-def _expiry():
-    return utcnow() + timedelta(hours=settings.RETENTION_HOURS)
 
 
 def _publish_job_event(job_id: str, payload: dict) -> None:
@@ -123,7 +118,7 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
                 job.page_count = pdf_info.get('page_count', 0)
                 job.image_count = pdf_info.get('image_count', 0)
                 job.progress = 1.0
-                job.expires_at = _expiry()
+                job.expires_at = expiry()
 
         # 결과가 확정된 뒤에는 원본을 들고 있을 이유가 없다 (보관 기간 동안 용량이 두 배가 된다)
         try:
@@ -159,7 +154,7 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
                         job.completed_at = utcnow()
                         job.result_file = None
                         # expires_at을 채워야 정리 작업이 실패한 작업의 업로드 파일도 회수한다
-                        job.expires_at = _expiry()
+                        job.expires_at = expiry()
         except Exception as inner:
             logger.error(f"재시도 레코드 업데이트 실패: {inner}")
 

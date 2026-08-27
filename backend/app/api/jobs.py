@@ -9,14 +9,13 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
-from datetime import timedelta
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import settings
 from app.core.schemas import JobResponse
 from app.core.redis_client import async_redis_client
-from app.models.database import get_db
-from app.models.job import Job, JobStatus, TERMINAL_STATUSES, utcnow
+from app.models.database import db_session, get_db
+from app.models.job import Job, JobStatus, TERMINAL_STATUSES, expiry, utcnow
 from app.services.file_service import delete_job_files
 from app.workers.celery_app import celery_app
 
@@ -34,21 +33,26 @@ def get_job_or_404(job_id: str, db: Session = Depends(get_db)) -> Job:
 
 @router.get("/jobs/{job_id}/stream")
 async def stream_job(job: Job = Depends(get_job_or_404)):
-    """Job 상태 변화를 SSE로 전달 (스냅샷 + Redis pub/sub)."""
-    # 세션이 닫히기 전에 스냅샷 값을 뽑아둔다
+    """Job 상태 변화를 SSE로 전달 (구독 → 스냅샷 → pub/sub)."""
     job_id = job.id
-    snapshot = {"job_id": job_id, "status": job.status.value, "progress": job.progress}
 
     async def event_gen():
-        yield {"event": "snapshot", "data": json.dumps(snapshot)}
-
-        if snapshot["status"] in TERMINAL_STATUSES:
-            return
-
-        # 동기 클라이언트의 get_message는 이벤트 루프를 최대 1초씩 멈춘다 — 비동기 클라이언트를 쓴다
+        # 구독을 먼저 걸어야, 스냅샷을 읽는 사이에 발행된 상태 변화를 놓치지 않는다.
+        # (폴링이 없으므로 한 번 놓치면 카드가 영영 그 상태로 남는다)
         pubsub = async_redis_client.pubsub()
+        await pubsub.subscribe(f"job:{job_id}")
         try:
-            await pubsub.subscribe(f"job:{job_id}")
+            with db_session() as db:
+                fresh = db.query(Job).filter(Job.id == job_id).first()
+                if not fresh:
+                    return
+                snapshot = {"job_id": job_id, "status": fresh.status.value, "progress": fresh.progress}
+
+            yield {"event": "snapshot", "data": json.dumps(snapshot)}
+
+            if snapshot["status"] in TERMINAL_STATUSES:
+                return
+
             while True:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if not (msg and msg.get("type") == "message"):
@@ -92,7 +96,7 @@ async def cancel_job(job: Job = Depends(get_job_or_404), db: Session = Depends(g
     job.status = JobStatus.CANCELLED
     job.completed_at = utcnow()
     # expires_at을 채워야 정리 작업이 취소된 작업의 업로드 파일도 회수한다
-    job.expires_at = job.completed_at + timedelta(hours=settings.RETENTION_HOURS)
+    job.expires_at = expiry()
     db.commit()
 
     logger.info(f"작업 취소: {job.id}")
@@ -141,7 +145,8 @@ def download_batch(job_ids: List[str], db: Session = Depends(get_db)):
     fd, zip_path = tempfile.mkstemp(suffix=".zip", dir=settings.TEMP_DIR)
     os.close(fd)
     try:
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        # PDF는 이미 압축돼 있어 deflate는 CPU만 쓰고 크기 이득이 거의 없다
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zip_file:
             for path, arcname in members:
                 zip_file.write(path, arcname)
     except Exception:
