@@ -76,14 +76,10 @@ Celery Beat (worker에 내장, 매시간 만료 파일 정리)
 git clone https://github.com/mesmeriz2/PDF-compressor.git
 cd PDF-compressor
 
-# 2. 환경 변수 설정
-cp env.example .env
-# .env 파일을 열어 필요한 값 수정 (기본값으로도 동작)
-
-# 3. 전체 스택 빌드 및 시작
+# 2. 전체 스택 빌드 및 시작 (별도 설정 불필요)
 docker compose up -d --build
 
-# 4. 로그 확인
+# 3. 로그 확인
 docker compose logs -f
 ```
 
@@ -108,7 +104,11 @@ docker compose down -v
 
 ## 환경 변수
 
-`env.example`을 복사하여 `.env` 파일로 사용합니다.
+설정값은 `docker-compose.yml`의 `environment:` 블록에서 주입됩니다.
+**`.env` 파일은 사용하지 않습니다** — compose에 `${VAR}` 치환도 `env_file:`도 없고,
+이미지 안에도 `.env`가 들어가지 않습니다. 값을 바꾸려면 `docker-compose.yml`을 수정하세요.
+
+`env.example`은 설정 가능한 항목과 기본값을 모아둔 **참조표**입니다.
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|

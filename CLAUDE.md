@@ -8,7 +8,11 @@ A large-scale PDF compression web application. Users upload PDFs via the Next.js
 
 ## Running the Application
 
-The entire stack is Docker-based. Copy `env.example` to `.env` before starting.
+The entire stack is Docker-based and runs with no extra setup — configuration is injected by
+`docker-compose.yml`'s `environment:` blocks. **`.env` is not used**: the compose file has no
+`${VAR}` interpolation or `env_file:`, and the image never receives a `.env`. `env.example` is a
+reference table of the available settings (kept in sync with `Settings` by `tests/test_config.py`);
+to change a value, edit `docker-compose.yml`.
 
 ```bash
 # Start all services (Redis, backend, worker (with embedded Beat), frontend, nginx)
@@ -77,7 +81,7 @@ npm run lint
 
 ### Backend (`backend/app/`)
 - **`main.py`**: FastAPI app setup — CORS, lifespan (DB init + directory creation), router mounting
-- **`core/config.py`**: All configuration via `pydantic-settings`. Reads from `.env`. Key instance: `settings`
+- **`core/config.py`**: All configuration via `pydantic-settings`, read from the process environment (compose injects it; `.env` is declared as a source but never present in the image). Key instance: `settings`
 - **`core/redis_client.py`**: Shared Redis clients — sync `redis_client` (dedup locks, worker publish) and `async_redis_client` (SSE pub/sub, so the stream never blocks the event loop)
 - **`models/job.py`**: SQLAlchemy `Job` model with `JobStatus`/`CompressionPreset` enums, the `TERMINAL_STATUSES` set, path properties (`upload_path`/`result_path`/`result_exists`/`download_name`), and one composite index `(expires_at, status)` matching the cleanup scan
 - **`models/database.py`**: SQLite engine with WAL + pragma tuning (cache 32MB, mmap 128MB, busy_timeout 30s), `SessionLocal`, and `db_session()` context manager (auto-commit/rollback/close). DB file lives inside the Docker volume at `/data/`
