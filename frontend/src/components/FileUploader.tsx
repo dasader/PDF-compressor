@@ -3,6 +3,8 @@
 import React, { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Upload, X, FileText } from 'lucide-react';
+import { formatBytes } from '@/lib/api';
+import { MAX_FILES_PER_BATCH, MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 interface FileUploaderProps {
@@ -11,15 +13,14 @@ interface FileUploaderProps {
   maxSize?: number;
 }
 
-export default function FileUploader({ 
-  onFilesSelected, 
-  maxFiles = 20,
-  maxSize = 512 * 1024 * 1024 // 512MB
+export default function FileUploader({
+  onFilesSelected,
+  maxFiles = MAX_FILES_PER_BATCH,
+  maxSize = MAX_UPLOAD_SIZE_BYTES,
 }: FileUploaderProps) {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    // 파일 필터링
     const validFiles = acceptedFiles.filter((file) => {
       if (file.type !== 'application/pdf') {
         alert(`${file.name}은(는) PDF 파일이 아닙니다.`);
@@ -32,9 +33,8 @@ export default function FileUploader({
       return true;
     });
 
-    const newFiles = [...selectedFiles, ...validFiles].slice(0, maxFiles);
-    setSelectedFiles(newFiles);
-  }, [selectedFiles, maxFiles, maxSize]);
+    setSelectedFiles((prev) => [...prev, ...validFiles].slice(0, maxFiles));
+  }, [maxFiles, maxSize]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -55,14 +55,6 @@ export default function FileUploader({
     }
   };
 
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
-  };
-
   return (
     <div className="space-y-4">
       <div
@@ -80,7 +72,7 @@ export default function FileUploader({
           {isDragActive ? "파일을 여기에 놓으세요..." : "PDF 파일을 드래그하거나 클릭하세요"}
         </p>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          최대 {maxFiles}개 파일, 파일당 최대 {maxSize / (1024 * 1024)}MB
+          최대 {maxFiles}개 파일, 파일당 최대 {MAX_UPLOAD_SIZE_MB}MB
         </p>
       </div>
 
@@ -92,7 +84,7 @@ export default function FileUploader({
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {selectedFiles.map((file, index) => (
               <div
-                key={index}
+                key={`${file.name}-${index}`}
                 className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
               >
                 <div className="flex items-center space-x-3 flex-1 min-w-0">
@@ -102,7 +94,7 @@ export default function FileUploader({
                       {file.name}
                     </p>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {formatFileSize(file.size)}
+                      {formatBytes(file.size)}
                     </p>
                   </div>
                 </div>
@@ -127,21 +119,3 @@ export default function FileUploader({
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

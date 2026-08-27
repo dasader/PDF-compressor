@@ -87,3 +87,8 @@ celerybeat.pid
 
 
 
+
+# 테스트 산출물
+backend/test.db
+*.db-wal
+*.db-shm

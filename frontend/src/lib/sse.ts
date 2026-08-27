@@ -1,4 +1,4 @@
-import type { Job } from "./api";
+import { TERMINAL_STATUSES, type Job } from "./api";
 
 export type JobUpdateHandler = (partial: Partial<Job> & { job_id: string }) => void;
 
@@ -7,49 +7,35 @@ export function subscribeJob(
   onUpdate: JobUpdateHandler,
   onTerminal?: () => void
 ): () => void {
-  const url = `/api/jobs/${jobId}/stream`;
-  let es: EventSource | null = new EventSource(url);
+  let es: EventSource | null = new EventSource(`/api/jobs/${jobId}/stream`);
 
-  const handleSnapshot = (e: MessageEvent) => {
+  const close = () => {
+    es?.close();
+    es = null;
+  };
+
+  // snapshot은 status 필드가 그대로 상태이고, update는 type === "status" 이벤트만 상태 전이다
+  const handle = (requireStatusType: boolean) => (e: MessageEvent) => {
     try {
       const data = JSON.parse(e.data);
       onUpdate({ ...data, id: data.job_id });
-      if (["completed", "failed", "cancelled"].includes(data.status)) {
-        es?.close();
-        es = null;
+
+      const isStatusEvent = !requireStatusType || data.type === "status";
+      if (isStatusEvent && TERMINAL_STATUSES.includes(data.status)) {
+        close();
         onTerminal?.();
       }
     } catch (err) {
-      console.error("SSE snapshot parse error", err);
+      console.error(`SSE parse error for job ${jobId}`, err);
     }
   };
 
-  const handleUpdate = (e: MessageEvent) => {
-    try {
-      const data = JSON.parse(e.data);
-      onUpdate({ ...data, id: data.job_id });
-      if (data.type === "status" && ["completed", "failed", "cancelled"].includes(data.status)) {
-        es?.close();
-        es = null;
-        onTerminal?.();
-      }
-    } catch (err) {
-      console.error("SSE update parse error", err);
-    }
-  };
-
-  const handleError = () => {
+  es.addEventListener("snapshot", handle(false) as EventListener);
+  es.addEventListener("update", handle(true) as EventListener);
+  es.addEventListener("error", () => {
     console.warn(`SSE connection error for job ${jobId}`);
-    es?.close();
-    es = null;
-  };
+    close();
+  });
 
-  es.addEventListener("snapshot", handleSnapshot as EventListener);
-  es.addEventListener("update", handleUpdate as EventListener);
-  es.addEventListener("error", handleError);
-
-  return () => {
-    es?.close();
-    es = null;
-  };
+  return close;
 }
