@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.init_db import init_db
-from app.api import upload, jobs, health
+from app.api import compress, upload, jobs, health
 
 # 로깅 설정
 setup_logging()
@@ -49,6 +49,7 @@ app.add_middleware(
 
 # 라우터 등록
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
+app.include_router(compress.router, prefix="/api", tags=["Compress"])
 app.include_router(jobs.router, prefix="/api", tags=["Jobs"])
 app.include_router(health.router, prefix="/api", tags=["Health"])
 

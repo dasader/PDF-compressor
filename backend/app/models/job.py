@@ -124,5 +124,10 @@ class Job(Base):
 
     @property
     def download_name(self) -> str:
-        """사용자에게 내려줄 파일명"""
-        return f"compressed_{self.original_filename}"
+        """사용자에게 내려줄 파일명 — 확장자 앞에 _compressed를 붙인다.
+
+        (내부 저장 파일명 result_file은 uuid 기반이라 이 규칙과 무관하며,
+        기존 레코드는 저장된 값을 그대로 쓰므로 영향받지 않는다.)
+        """
+        stem, ext = os.path.splitext(self.original_filename)
+        return f"{stem}_compressed{ext}"

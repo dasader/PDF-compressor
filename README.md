@@ -13,6 +13,7 @@ Next.js 프론트엔드, FastAPI 백엔드, Celery 비동기 워커로 구성된
 - **실시간 진행률** 표시 (SSE 스트림, 작업별 구독)
 - **중복 파일 감지** (SHA-256 해시 기반 결과 재사용)
 - **배치 ZIP 다운로드** (여러 파일 동시 다운로드)
+- **서버 간 연동 API** (`POST /api/compress` — 보내면 압축본을 바로 반환)
 - **24시간 자동 파일 만료** 및 정리 스케줄러
 - **암호화된 PDF 자동 거부**
 - 한글 파일명 다운로드 지원 (RFC 5987)
@@ -118,6 +119,7 @@ docker compose down -v
 | `MAX_FILES_PER_BATCH` | `20` | 배치당 최대 파일 수 |
 | `WORKER_CONCURRENCY` | `1` | Celery 동시 작업 수 |
 | `RETENTION_HOURS` | `24` | 압축 파일 보관 시간 |
+| `SYNC_COMPRESS_TIMEOUT_SECONDS` | `300` | `/api/compress`가 결과를 기다리는 상한 (초) |
 | `ENABLE_DEDUPLICATION` | `true` | 동일 파일+옵션 결과 재사용 |
 | `ENABLE_ENGINE_FALLBACK` | `true` | 엔진 자동 폴백 |
 | `LOG_LEVEL` | `WARNING` | 로그 레벨 |
@@ -130,7 +132,8 @@ docker compose down -v
 
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| `POST` | `/api/upload` | PDF 업로드 및 압축 작업 등록 |
+| `POST` | `/api/compress` | **PDF 하나를 보내고 압축 결과를 바로 받음 (서버 간 연동)** |
+| `POST` | `/api/upload` | PDF 업로드 및 압축 작업 등록 (비동기) |
 | `GET` | `/api/jobs/{id}` | 작업 상태 조회 |
 | `GET` | `/api/jobs/{id}/stream` | 작업 상태 SSE 스트림 |
 | `GET` | `/api/jobs/{id}/download` | 압축 파일 다운로드 |
@@ -139,6 +142,43 @@ docker compose down -v
 | `DELETE` | `/api/jobs/{id}` | 작업 및 파일 삭제 |
 | `GET` | `/api/healthz` | 헬스체크 |
 | `GET` | `/api/readyz` | 준비 상태 확인 |
+
+### 다른 서비스에서 호출하기
+
+`POST /api/compress`는 PDF를 받아 압축된 PDF를 **응답 본문으로 그대로** 돌려줍니다.
+옵션은 전부 생략 가능하며, 생략하면 기본값(`ebook` 프리셋 / `ghostscript` 엔진 / 메타데이터 보존)으로 처리합니다.
+
+```bash
+# 기본 옵션
+curl -X POST http://localhost:8106/api/compress \
+  -F "file=@input.pdf" \
+  -o output.pdf
+
+# 옵션 지정
+curl -X POST http://localhost:8106/api/compress \
+  -F "file=@input.pdf" \
+  -F "preset=screen" \
+  -F "engine=pikepdf" \
+  -F "preserve_metadata=false" \
+  -o output.pdf
+```
+
+```python
+import requests
+
+with open("input.pdf", "rb") as f:
+    r = requests.post("http://localhost:8106/api/compress", files={"file": f})
+
+r.raise_for_status()
+open("output.pdf", "wb").write(r.content)
+print(r.headers["X-Original-Size"], "→", r.headers["X-Compressed-Size"])
+```
+
+응답 헤더로 `X-Job-Id`, `X-Original-Size`, `X-Compressed-Size`, `X-Compression-Ratio`를 함께 줍니다.
+
+`SYNC_COMPRESS_TIMEOUT_SECONDS`(기본 300초) 안에 끝나지 않으면 **202**와 함께
+`job_id`·`download_url`을 돌려주므로, 완료 후 `GET /api/jobs/{id}/download`로 받아가면 됩니다.
+동일한 파일+옵션이 이미 처리돼 있으면 압축 없이 즉시 결과를 반환합니다.
 
 전체 API 명세: http://localhost:8106/docs (Swagger UI)
 

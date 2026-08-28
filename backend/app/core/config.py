@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     WORKER_CONCURRENCY: int = 1  # 2→1: 동시 작업 1개만 (4GB 환경용)
     TASK_TIMEOUT_SECONDS: int = 900
     TASK_MAX_RETRIES: int = 3
+    # POST /api/compress가 결과를 기다리는 상한. 넘으면 job_id를 돌려준다.
+    SYNC_COMPRESS_TIMEOUT_SECONDS: int = 300
     
     # 파일 보관 설정
     RETENTION_HOURS: int = 24
