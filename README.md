@@ -7,7 +7,7 @@ Next.js 프론트엔드, FastAPI 백엔드, Celery 비동기 워커로 구성된
 
 ## 주요 기능
 
-- **드래그 앤 드롭** 파일 업로드 (최대 20개 동시, 파일당 512MB)
+- **드래그 앤 드롭** 파일 업로드 (최대 10개 동시, 파일당 512MB)
 - **4가지 압축 프리셋** (screen / ebook / printer / prepress)
 - **2가지 압축 엔진** — 최대 압축(Ghostscript, 손실) / 무손실(pikepdf), 자동 폴백
 - **실시간 진행률** 표시 (SSE 스트림, 작업별 구독)
@@ -116,7 +116,7 @@ docker compose down -v
 | `REDIS_HOST` | `redis` | Redis 호스트명 |
 | `REDIS_PORT` | `6379` | Redis 포트 |
 | `MAX_UPLOAD_SIZE_MB` | `512` | 파일당 최대 업로드 크기 (MB) |
-| `MAX_FILES_PER_BATCH` | `20` | 배치당 최대 파일 수 |
+| `MAX_FILES_PER_BATCH` | `10` | 배치당 최대 파일 수 |
 | `WORKER_CONCURRENCY` | `1` | Celery 동시 작업 수 |
 | `RETENTION_HOURS` | `24` | 압축 파일 보관 시간 |
 | `SYNC_COMPRESS_TIMEOUT_SECONDS` | `300` | `/api/compress`가 결과를 기다리는 상한 (초) |
@@ -203,7 +203,9 @@ print(r.headers["X-Original-Size"], "→", r.headers["X-Compressed-Size"])
 `job_id`·`download_url`을 돌려주므로, 완료 후 `GET /api/jobs/{id}/download`로 받아가면 됩니다.
 동일한 파일+옵션이 이미 처리돼 있으면 압축 없이 즉시 결과를 반환합니다.
 
-전체 API 명세: http://localhost:8106/docs (Swagger UI)
+다른 서비스·에이전트에 넘길 연동 규칙: **[`docs/API.md`](docs/API.md)**
+
+전체 API 명세: http://127.0.0.1:8106/docs (Swagger UI)
 
 ---
 

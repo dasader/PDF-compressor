@@ -4,7 +4,7 @@
  */
 export const APP_NAME = 'PDF Compressor(made by mesmerized!)';
 
-export const MAX_FILES_PER_BATCH = 20;
+export const MAX_FILES_PER_BATCH = 10;
 export const MAX_UPLOAD_SIZE_MB = 512;
 export const MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024;
 export const RETENTION_HOURS = 24;

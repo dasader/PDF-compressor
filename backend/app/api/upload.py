@@ -153,7 +153,7 @@ async def upload_files(
     """
     PDF 파일 업로드 및 압축 작업 등록 (비동기 — 진행 상황은 SSE로 구독)
 
-    - **files**: 업로드할 PDF 파일들 (최대 20개)
+    - **files**: 업로드할 PDF 파일들 (최대 10개)
     - **preset**: 압축 프리셋 (screen/ebook/printer/prepress)
     - **engine**: 압축 엔진 (ghostscript=최대 압축 / pikepdf=무손실)
     - **preserve_metadata**: 메타데이터 보존 여부
