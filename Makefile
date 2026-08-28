@@ -1,13 +1,13 @@
 # PDF Compressor 운영 명령
 #
-# 배포 갱신은 `make update` 하나면 된다 (git pull → 이미지 재빌드 → 컨테이너 재생성).
+# 배포 갱신은 `make rebuild` 하나면 된다 (git pull → 이미지 재빌드 → 컨테이너 재생성).
 # 나머지는 그 과정을 나눠 쓰거나 결과를 확인하기 위한 것이다.
 
 COMPOSE ?= docker compose
 ENTRY   ?= http://127.0.0.1:8106
 
 .DEFAULT_GOAL := help
-.PHONY: help pull recreate update logs ps down
+.PHONY: help pull recreate rebuild logs ps down
 
 help:  ## 명령 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -20,7 +20,7 @@ recreate:  ## 이미지 재빌드 후 컨테이너 재생성
 	$(COMPOSE) up -d --build --force-recreate --remove-orphans
 	@$(MAKE) --no-print-directory ps
 
-update: pull recreate  ## pull + recreate (배포 갱신)
+rebuild: pull recreate  ## pull + recreate (배포 갱신)
 
 logs:  ## 전체 로그 따라가기 (Ctrl+C로 종료)
 	$(COMPOSE) logs -f

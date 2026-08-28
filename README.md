@@ -95,14 +95,14 @@ make logs
 ### 배포 갱신
 
 ```bash
-make update          # git pull → 이미지 재빌드 → 컨테이너 재생성 → 상태 출력
+make rebuild         # git pull → 이미지 재빌드 → 컨테이너 재생성 → 상태 출력
 ```
 
 `make` 만 치면 사용 가능한 명령이 나옵니다.
 
 | 명령 | 설명 |
 |------|------|
-| `make update` | `pull` + `recreate` (배포 갱신) |
+| `make rebuild` | `pull` + `recreate` (배포 갱신) |
 | `make pull` | 최신 코드 받기 |
 | `make recreate` | 이미지 재빌드 후 컨테이너 재생성 |
 | `make ps` | 컨테이너 상태와 공개 포트 |
