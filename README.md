@@ -89,7 +89,7 @@ docker compose logs -f
 | 서비스 | URL |
 |--------|-----|
 | **백엔드 API** | http://localhost:8106/api |
-| **Nginx 통합** | http://localhost:8106 |
+| **Nginx 통합** | http://127.0.0.1:8106 (이 머신 전용) |
 | **API 문서** | http://localhost:8106/docs |
 
 ### 중지
@@ -144,6 +144,29 @@ docker compose down -v
 | `GET` | `/api/readyz` | 준비 상태 확인 |
 
 ### 다른 서비스에서 호출하기
+
+진입점은 **이 머신에서만** 접근할 수 있습니다 (`127.0.0.1:8106` 바인딩).
+LAN의 다른 장비에는 노출되지 않으므로, 호출자 위치에 따라 주소가 다릅니다.
+
+| 호출자 | 주소 |
+|--------|------|
+| 이 머신의 **호스트 프로세스** | `http://127.0.0.1:8106` |
+| 이 머신의 **다른 컨테이너** | `http://nginx:80` — 컨테이너를 `pdf-network`에 붙인다 |
+| **다른 장비** | 접근 불가 (필요하면 포트 바인딩을 되돌리고 인증을 붙여야 함) |
+
+컨테이너에서 부를 때 `127.0.0.1:8106`은 **그 컨테이너 자신**을 가리키므로 닿지 않습니다.
+호출자 compose에 아래처럼 네트워크를 붙이세요.
+
+```yaml
+services:
+  my-service:
+    networks: [default, pdf-network]
+
+networks:
+  pdf-network:
+    external: true
+    name: pdf-network
+```
 
 `POST /api/compress`는 PDF를 받아 압축된 PDF를 **응답 본문으로 그대로** 돌려줍니다.
 옵션은 전부 생략 가능하며, 생략하면 기본값(`ebook` 프리셋 / `ghostscript` 엔진 / 메타데이터 보존)으로 처리합니다.
