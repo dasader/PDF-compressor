@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     
     # 업로드 설정
     MAX_UPLOAD_SIZE_MB: int = 512  # 2048→512: 메모리 절약 (4GB 환경용)
-    MAX_FILES_PER_BATCH: int = 20  # 동시 업로드 제한
+    MAX_FILES_PER_BATCH: int = 10  # 배치당 파일 수 상한
     UPLOAD_DIR: str = "/data/uploads"
     RESULT_DIR: str = "/data/results"
     TEMP_DIR: str = "/data/temp"

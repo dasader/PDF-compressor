@@ -33,7 +33,8 @@ solely on the compose network (use `docker compose exec <service>` to poke at th
   so the LAN (192.168.0.x) cannot reach it. Sibling containers must join the `pdf-network`
   (named explicitly so it is joinable as `external: true`) and call `http://nginx:80`;
   `127.0.0.1:8106` inside another container points at that container itself.
-- API docs (proxied to the backend): `http://localhost:8106/docs`
+- API docs (proxied to the backend): `http://127.0.0.1:8106/docs`
+- Integration contract handed to other services/agents: `docs/API.md`
 
 ## Backend Development
 
