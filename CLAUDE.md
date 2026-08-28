@@ -29,7 +29,10 @@ docker compose up -d --build
 Service ports — this service is **NN=06** in `../PORTS.md` (the single source for host ports; `대역 + NN`).
 Only the public entry point is published to the host; backend, frontend and redis are reachable
 solely on the compose network (use `docker compose exec <service>` to poke at them):
-- Nginx (unified entry, everything goes through it): `http://localhost:8106`
+- Nginx (unified entry, everything goes through it): `http://127.0.0.1:8106` — **loopback only**,
+  so the LAN (192.168.0.x) cannot reach it. Sibling containers must join the `pdf-network`
+  (named explicitly so it is joinable as `external: true`) and call `http://nginx:80`;
+  `127.0.0.1:8106` inside another container points at that container itself.
 - API docs (proxied to the backend): `http://localhost:8106/docs`
 
 ## Backend Development
