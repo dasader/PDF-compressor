@@ -1,5 +1,5 @@
 # 호스트 포트는 ../PORTS.md 규칙을 따른다 — 이 서비스는 NN=06
-#   공개 진입점 nginx만 127.0.0.1:8106 으로 노출한다 (이 머신 전용).
+#   공개 진입점 nginx만 8106 으로 노출한다 (접근 범위는 nginx의 allow/deny로 제한).
 #   backend/frontend/redis는 컨테이너 네트워크 안에서만 접근되므로 포트를 열지 않는다.
 #   디버깅이 필요하면 `docker compose exec <서비스>` 를 쓴다.
 
@@ -126,9 +126,9 @@ services:
     image: nginx:alpine
     container_name: pdf-compressor-nginx
     ports:
-      # 이 머신 안에서만 접근 가능 (LAN 192.168.0.x 의 다른 장비에는 노출되지 않는다).
-      # 다른 컨테이너에서 부를 때는 이 포트가 아니라 pdf-network에 붙어 http://nginx:80 을 쓴다.
-      - "127.0.0.1:8106:80"
+      # 다른 장비(192.168.0.x)에서도 호출하므로 LAN에 노출한다.
+      # 호스트 IP가 DHCP라 특정 IP 바인딩 대신 nginx의 IP 허용목록으로 접근을 제한한다.
+      - "8106:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
