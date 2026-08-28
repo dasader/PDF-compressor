@@ -14,6 +14,9 @@ The entire stack is Docker-based and runs with no extra setup — configuration 
 reference table of the available settings (kept in sync with `Settings` by `tests/test_config.py`);
 to change a value, edit `docker-compose.yml`.
 
+`Makefile` wraps the day-to-day commands — `make` alone lists them. `make update`
+is the deploy path (git pull → rebuild → force-recreate → print status).
+
 ```bash
 # Start all services (Redis, backend, worker (with embedded Beat), frontend, nginx)
 docker compose up -d

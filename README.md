@@ -78,10 +78,10 @@ git clone https://github.com/mesmeriz2/PDF-compressor.git
 cd PDF-compressor
 
 # 2. 전체 스택 빌드 및 시작 (별도 설정 불필요)
-docker compose up -d --build
+make recreate        # = docker compose up -d --build --force-recreate
 
 # 3. 로그 확인
-docker compose logs -f
+make logs
 ```
 
 ### 접속
@@ -92,10 +92,27 @@ docker compose logs -f
 | **Nginx 통합** | http://127.0.0.1:8106 (이 머신 전용) |
 | **API 문서** | http://localhost:8106/docs |
 
+### 배포 갱신
+
+```bash
+make update          # git pull → 이미지 재빌드 → 컨테이너 재생성 → 상태 출력
+```
+
+`make` 만 치면 사용 가능한 명령이 나옵니다.
+
+| 명령 | 설명 |
+|------|------|
+| `make update` | `pull` + `recreate` (배포 갱신) |
+| `make pull` | 최신 코드 받기 |
+| `make recreate` | 이미지 재빌드 후 컨테이너 재생성 |
+| `make ps` | 컨테이너 상태와 공개 포트 |
+| `make logs` | 전체 로그 따라가기 |
+| `make down` | 중지 및 제거 (데이터 볼륨 유지) |
+
 ### 중지
 
 ```bash
-docker compose down
+make down            # = docker compose down
 
 # 볼륨(데이터)까지 삭제
 docker compose down -v
