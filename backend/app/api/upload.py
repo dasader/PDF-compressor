@@ -3,7 +3,7 @@ import os
 import uuid
 import hashlib
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
@@ -74,6 +74,73 @@ def _reuse_completed_result(db: Session, base: dict) -> Optional[Job]:
     return None
 
 
+async def ingest_file(
+    db: Session,
+    upload_file: UploadFile,
+    options: dict,
+    user_session: Optional[str] = None,
+) -> Tuple[Job, Optional[str]]:
+    """업로드 파일 하나를 저장·검증하고 Job을 만든다. 배치 업로드와 동기 압축이 함께 쓴다.
+
+    Returns:
+        (job, task_id) — task_id가 None이면 dedup으로 기존 결과를 재사용해 이미
+        COMPLETED 상태이고 디스패치가 필요 없다. 그 외에는 호출자가 커밋한 뒤
+        이 task_id로 디스패치해야 한다.
+
+    Raises:
+        ValueError 등 — 저장한 임시 파일은 정리하고 예외를 그대로 올린다.
+    """
+    original_filename = FileService.sanitize_filename(upload_file.filename)
+    file_id = str(uuid.uuid4())
+    filename = f"{file_id}.pdf"
+    file_path = os.path.join(settings.UPLOAD_DIR, filename)
+
+    try:
+        logger.info(f"파일 저장 시작: {original_filename}")
+        file_size, file_hash = await FileService.save_upload_file_with_hash(
+            upload_file, file_path, max_size=settings.max_upload_size_bytes,
+        )
+
+        if not FileService.validate_pdf(file_path):
+            raise ValueError("유효하지 않은 PDF 파일입니다")
+
+        if not FileService.scan_antivirus(file_path):
+            raise ValueError("바이러스가 감지되었습니다")
+
+        base = dict(
+            id=file_id,
+            user_session=user_session,
+            filename=filename,
+            original_filename=original_filename,
+            file_hash=file_hash,
+            original_size=file_size,
+            created_at=utcnow(),
+            **options,
+        )
+
+        # 락 획득(최대 10초)과 커밋은 blocking이라 이벤트 루프 밖에서 돌린다
+        if settings.ENABLE_DEDUPLICATION:
+            reused = await run_in_threadpool(_reuse_completed_result, db, base)
+            if reused is not None:
+                # 재사용했으면 방금 저장한 원본은 압축될 일이 없다
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+                return reused, None
+
+        # task_id를 미리 정해두면 커밋 한 번으로 Job 저장이 끝난다
+        task_id = str(uuid.uuid4())
+        job = Job(**base, status=JobStatus.QUEUED, celery_task_id=task_id)
+        db.add(job)
+        return job, task_id
+
+    except Exception:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
+
+
 @router.post("/upload", response_model=UploadResponse)
 async def upload_files(
     files: List[UploadFile] = File(...),
@@ -84,7 +151,7 @@ async def upload_files(
     db: Session = Depends(get_db)
 ):
     """
-    PDF 파일 업로드 및 압축 작업 등록
+    PDF 파일 업로드 및 압축 작업 등록 (비동기 — 진행 상황은 SSE로 구독)
 
     - **files**: 업로드할 PDF 파일들 (최대 20개)
     - **preset**: 압축 프리셋 (screen/ebook/printer/prepress)
@@ -93,6 +160,8 @@ async def upload_files(
     - **user_session**: 사용자 세션 ID (옵션)
 
     파일 단위로 실패를 모아 `failed`로 돌려준다. 전부 실패한 경우에만 400.
+
+    서버 간 연동으로 압축 결과를 바로 받고 싶다면 `POST /api/compress`를 쓴다.
     """
 
     if len(files) > settings.MAX_FILES_PER_BATCH:
@@ -101,66 +170,21 @@ async def upload_files(
             detail=f"최대 {settings.MAX_FILES_PER_BATCH}개 파일까지 업로드 가능합니다"
         )
 
+    options = dict(preset=preset, engine=engine, preserve_metadata=preserve_metadata)
     created: List[Job] = []
-    queued: List[tuple] = []   # (job, task_id) — 커밋 후 한꺼번에 디스패치
+    queued: List[Tuple[Job, str]] = []   # 커밋 후 한꺼번에 디스패치
     failed: List[UploadFailure] = []
 
     for upload_file in files:
-        original_filename = FileService.sanitize_filename(upload_file.filename)
-        file_id = str(uuid.uuid4())
-        filename = f"{file_id}.pdf"
-        file_path = os.path.join(settings.UPLOAD_DIR, filename)
-
         try:
-            logger.info(f"파일 저장 시작: {original_filename}")
-            file_size, file_hash = await FileService.save_upload_file_with_hash(
-                upload_file, file_path, max_size=settings.max_upload_size_bytes,
-            )
-
-            if not FileService.validate_pdf(file_path):
-                raise ValueError("유효하지 않은 PDF 파일입니다")
-
-            if not FileService.scan_antivirus(file_path):
-                raise ValueError("바이러스가 감지되었습니다")
-
-            base = dict(
-                id=file_id,
-                user_session=user_session,
-                filename=filename,
-                original_filename=original_filename,
-                file_hash=file_hash,
-                original_size=file_size,
-                created_at=utcnow(),
-                preset=preset,
-                engine=engine,
-                preserve_metadata=preserve_metadata,
-            )
-
-            # 락 획득(최대 10초)과 커밋은 blocking이라 이벤트 루프 밖에서 돌린다
-            reused = None
-            if settings.ENABLE_DEDUPLICATION:
-                reused = await run_in_threadpool(_reuse_completed_result, db, base)
-
-            if reused is not None:
-                # 재사용했으면 방금 저장한 원본은 압축될 일이 없다
-                try:
-                    os.remove(file_path)
-                except OSError:
-                    pass
-                created.append(reused)
-                continue
-
-            # task_id를 미리 정해두면 커밋 한 번으로 Job 저장이 끝난다
-            job = Job(**base, status=JobStatus.QUEUED, celery_task_id=str(uuid.uuid4()))
-            db.add(job)
+            job, task_id = await ingest_file(db, upload_file, options, user_session)
             created.append(job)
-            queued.append((job, job.celery_task_id))
-
+            if task_id:
+                queued.append((job, task_id))
         except Exception as e:
             logger.error(f"업로드 처리 실패: {upload_file.filename} - {e}")
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            failed.append(UploadFailure(filename=original_filename, error=str(e)))
+            failed.append(UploadFailure(
+                filename=FileService.sanitize_filename(upload_file.filename), error=str(e)))
 
     if queued:
         await run_in_threadpool(db.commit)

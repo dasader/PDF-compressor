@@ -77,7 +77,7 @@ npm run lint
 2. `POST /api/upload` → FastAPI backend saves file to `/data/uploads/`, creates a `Job` record in SQLite, enqueues `compress_pdf_task` to Redis/Celery, and returns the created `Job` rows directly (per-file failures come back in `failed`, so a bad file no longer aborts the batch)
 3. Celery worker picks up the task, runs the compression engine, writes result to `/data/results/`, and deletes the source upload on success
 4. Frontend subscribes to `GET /api/jobs/{id}/stream` (SSE). Backend emits a snapshot on connect and forwards worker-published progress/status events from Redis pub/sub channel `job:{id}`
-5. On completion, user downloads via `GET /api/jobs/{id}/download`
+5. On completion, user downloads via `GET /api/jobs/{id}/download`. Downloads are named `<원본이름>_compressed.pdf` (`Job.download_name`); the on-disk `result_file` stays uuid-based
 
 ### Backend (`backend/app/`)
 - **`main.py`**: FastAPI app setup — CORS, lifespan (DB init + directory creation), router mounting
@@ -85,7 +85,8 @@ npm run lint
 - **`core/redis_client.py`**: Shared Redis clients — sync `redis_client` (dedup locks, worker publish) and `async_redis_client` (SSE pub/sub, so the stream never blocks the event loop)
 - **`models/job.py`**: SQLAlchemy `Job` model with `JobStatus`/`CompressionPreset` enums, the `TERMINAL_STATUSES` set, path properties (`upload_path`/`result_path`/`result_exists`/`download_name`), and one composite index `(expires_at, status)` matching the cleanup scan
 - **`models/database.py`**: SQLite engine with WAL + pragma tuning (cache 32MB, mmap 128MB, busy_timeout 30s), `SessionLocal`, and `db_session()` context manager (auto-commit/rollback/close). DB file lives inside the Docker volume at `/data/`
-- **`api/upload.py`**: Single-pass save + SHA-256 hash; Redis distributed-lock-protected dedup; Celery task dispatch
+- **`api/upload.py`**: `ingest_file()` (single-pass save + SHA-256 hash, validation, Redis distributed-lock-protected dedup, Job creation) shared by the batch and sync endpoints; `POST /api/upload` enqueues a batch and returns the created `Job` rows
+- **`api/compress.py`**: `POST /api/compress` — the server-to-server path. Takes one PDF, dispatches to the worker, waits for the result (polling every 0.5s up to `SYNC_COMPRESS_TIMEOUT_SECONDS`) and returns the compressed PDF in the response body with `X-Original-Size`/`X-Compressed-Size`/`X-Compression-Ratio` headers. On timeout it returns 202 with `job_id` + `download_url` so the caller can collect later. All options are optional and fall back to defaults
 - **`api/jobs.py`**: `get_job_or_404` dependency, SSE stream endpoint (`/jobs/{id}/stream`, async Redis pub/sub), per-file download, batch ZIP (built on disk in `TEMP_DIR` and removed by a `BackgroundTask`), cancellation via Celery revoke
 - **`services/file_service.py`**: `save_upload_file_with_hash` (single-pass), PDF validation, filename sanitization
 - **`services/compression_engine.py`**: Strategy pattern — `GhostscriptEngine` (lossy: halves image resolution, the only engine that shrinks scans) and `PikePDFEngine` (lossless: structure only, best on text-heavy docs, always available so it doubles as the fallback) extend `CompressionEngine` and share `_result()`. `compress()` takes `preserve_metadata` explicitly (only pikepdf honors it; Ghostscript always preserves). `get_engine()` raises `ValueError` on an unknown name, maps retired names via `_ALIASES` (`qpdf` → `pikepdf`), and falls back only when the named engine is unavailable. Module-level `get_pdf_info()` is engine-independent
