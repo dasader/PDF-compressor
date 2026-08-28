@@ -7,17 +7,24 @@
 
 ## 1. 어디로 부르나
 
-진입점은 **이 머신에서만** 접근할 수 있습니다 (`127.0.0.1:8106` 바인딩).
+진입점은 **내부망에서만** 접근할 수 있습니다 (nginx IP 허용목록).
 호출자 위치에 따라 주소가 다릅니다. **이걸 틀리면 연결이 안 됩니다.**
 
 | 호출자 | 베이스 URL |
 |--------|-----------|
+| **다른 장비** (같은 LAN, 예: 192.168.0.93) | `http://192.168.0.92:8106` |
+| 같은 머신의 **다른 컨테이너** | `http://nginx:80` (또는 `http://192.168.0.92:8106`) |
 | 같은 머신의 **호스트 프로세스** | `http://127.0.0.1:8106` |
-| 같은 머신의 **다른 컨테이너** | `http://nginx:80` |
-| 다른 장비 (LAN `192.168.0.x`) | **접근 불가** |
+| 허용목록 밖 대역 | **403** |
 
-컨테이너에서 `127.0.0.1:8106`은 **그 컨테이너 자신**을 가리켜 닿지 않습니다.
-호출자 compose에 네트워크를 붙이세요.
+`http://nginx:80`은 **같은 머신의 도커 네트워크 안에서만** 해석되는 이름입니다.
+다른 장비에서는 호스트 IP(`192.168.0.92:8106`)를 써야 합니다.
+
+허용 대역은 `nginx.conf`의 `allow` 줄에 있습니다 (`192.168.0.0/24`, 도커 대역, localhost).
+호출 장비가 다른 대역에 생기면 `allow` 한 줄을 추가하고 `make recreate` 하세요.
+
+같은 머신의 컨테이너에서 `127.0.0.1:8106`은 **그 컨테이너 자신**을 가리켜 닿지 않습니다.
+서비스명으로 부르려면 호출자 compose에 네트워크를 붙이세요 (호스트 IP를 써도 됩니다).
 
 ```yaml
 services:
@@ -88,10 +95,10 @@ networks:
 
 ```bash
 # 기본 옵션
-curl -fsS -X POST http://nginx:80/api/compress -F "file=@input.pdf" -o output.pdf
+curl -fsS -X POST http://192.168.0.92:8106/api/compress -F "file=@input.pdf" -o output.pdf
 
 # 옵션 지정
-curl -fsS -X POST http://nginx:80/api/compress \
+curl -fsS -X POST http://192.168.0.92:8106/api/compress \
   -F "file=@input.pdf" -F "preset=screen" -F "engine=pikepdf" -F "preserve_metadata=false" \
   -o output.pdf
 ```
@@ -99,8 +106,9 @@ curl -fsS -X POST http://nginx:80/api/compress \
 ```python
 import requests
 
-BASE = "http://nginx:80"          # 컨테이너에서 호출할 때
-# BASE = "http://127.0.0.1:8106"  # 호스트 프로세스에서 호출할 때
+BASE = "http://192.168.0.92:8106"  # 다른 장비에서 호출할 때
+# BASE = "http://nginx:80"         # 같은 머신의 컨테이너에서
+# BASE = "http://127.0.0.1:8106"   # 같은 머신의 호스트 프로세스에서
 
 with open("input.pdf", "rb") as f:
     r = requests.post(f"{BASE}/api/compress", files={"file": f}, timeout=600)
