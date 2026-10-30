@@ -2,7 +2,9 @@
 import json
 import logging
 import os
+from datetime import timedelta
 from typing import Dict, Any
+from sqlalchemy import and_, or_
 from app.workers.celery_app import celery_app
 from app.core.config import settings
 from app.core.redis_client import redis_client
@@ -24,6 +26,15 @@ def _publish_job_event(job_id: str, payload: dict) -> None:
 
 def _publish_status(job_id: str, status: str, **extra) -> None:
     _publish_job_event(job_id, {"job_id": job_id, "type": "status", "status": status, **extra})
+
+
+def _mark_failed(job: Job, message: str) -> None:
+    job.status = JobStatus.FAILED
+    job.error_message = message
+    job.completed_at = utcnow()
+    job.result_file = None
+    # expires_at을 채워야 정리 작업이 실패한 작업의 업로드 파일도 회수한다
+    job.expires_at = expiry()
 
 
 def update_progress(job_id: str, progress: float) -> None:
@@ -57,6 +68,22 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
             job = db.query(Job).filter(Job.id == job_id).first()
             if not job:
                 raise ValueError(f"작업을 찾을 수 없습니다: {job_id}")
+
+            # 취소·정리로 이미 끝난 작업의 메시지가 다시 배달될 수 있다
+            if job.status in TERMINAL_STATUSES:
+                logger.info(f"이미 종료된 작업, 건너뜀: {job_id} ({job.status.value})")
+                return {'success': False, 'job_id': job_id, 'skipped': True}
+
+            # RUNNING으로 다시 들어왔다 = 직전 시도가 except에 닿지 못하고 죽었다 (OOM kill 등).
+            # acks_late + reject_on_worker_lost가 같은 메시지를 곧바로 다시 넣으므로,
+            # 여기서 세지 않으면 같은 파일로 워커가 끝없이 죽고 뒤의 작업이 영영 밀린다.
+            if job.status == JobStatus.RUNNING:
+                job.retry_count += 1
+                if job.retry_count >= settings.TASK_MAX_RETRIES:
+                    _mark_failed(job, "압축 중 워커가 비정상 종료되었습니다 (메모리 부족 또는 시간 초과)")
+                    db.commit()
+                    _publish_status(job_id, "failed", error=job.error_message)
+                    return {'success': False, 'job_id': job_id}
 
             job.status = JobStatus.RUNNING
             job.started_at = utcnow()
@@ -148,13 +175,10 @@ def compress_pdf_task(self, job_id: str) -> Dict[str, Any]:
                     if job.retry_count < settings.TASK_MAX_RETRIES:
                         logger.info(f"작업 재시도: {job_id} ({job.retry_count}/{settings.TASK_MAX_RETRIES})")
                         retry_countdown = 60 * (2 ** job.retry_count)
+                        # RUNNING으로 남겨두면 재진입 때 '죽은 시도'로 한 번 더 센다
+                        job.status = JobStatus.QUEUED
                     else:
-                        job.status = JobStatus.FAILED
-                        job.error_message = str(e)
-                        job.completed_at = utcnow()
-                        job.result_file = None
-                        # expires_at을 채워야 정리 작업이 실패한 작업의 업로드 파일도 회수한다
-                        job.expires_at = expiry()
+                        _mark_failed(job, str(e))
         except Exception as inner:
             logger.error(f"재시도 레코드 업데이트 실패: {inner}")
 
@@ -173,6 +197,21 @@ def cleanup_old_files_task():
     batch_size = 200
 
     try:
+        # 끝나지 못한 작업을 실패로 돌려 아래 정리 대상에 넣는다.
+        # - RUNNING: 하드 타임아웃으로 죽으면 재배달도 except도 없어 영영 RUNNING에 머문다
+        # - QUEUED: Redis는 영속화가 꺼져 있어 재시작하면 큐가 사라진다
+        with db_session() as db:
+            stale = db.query(Job).filter(or_(
+                and_(Job.status == JobStatus.RUNNING,
+                     Job.started_at < cutoff_time - timedelta(seconds=2 * settings.TASK_TIMEOUT_SECONDS)),
+                and_(Job.status == JobStatus.QUEUED,
+                     Job.created_at < cutoff_time - timedelta(hours=settings.RETENTION_HOURS)),
+            )).all()
+            for job in stale:
+                _mark_failed(job, "작업이 제한 시간 안에 끝나지 않았습니다")
+            if stale:
+                logger.warning(f"멈춘 작업 {len(stale)}개를 실패 처리")
+
         while True:
             with db_session() as db:
                 expired_jobs = (

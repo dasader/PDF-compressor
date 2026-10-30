@@ -3,6 +3,13 @@
 #   backend/frontend/redis는 컨테이너 네트워크 안에서만 접근되므로 포트를 열지 않는다.
 #   디버깅이 필요하면 `docker compose exec <서비스>` 를 쓴다.
 
+# 데몬 기본(json-file)은 로그를 무한정 쌓는다 — 호스트에 daemon.json이 없으므로 여기서 상한을 둔다
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 # backend와 worker가 공유하는 빌드/환경/네트워크 설정
 x-backend-base: &backend-base
   build:
@@ -13,6 +20,9 @@ x-backend-base: &backend-base
   networks:
     - pdf-network
   restart: unless-stopped
+  logging: *logging
+  # PID 1이 고아 프로세스(강제 종료된 태스크가 남긴 gs 등)를 거두도록 tini를 붙인다
+  init: true
 
 x-backend-env: &backend-env
   REDIS_HOST: redis
@@ -35,6 +45,9 @@ services:
       --save ""
       --maxmemory 384mb
       --maxmemory-policy volatile-lru
+    # 이게 없으면 호스트 재부팅·크래시 후 redis만 안 올라와 업로드/SSE/워커가 전부 멈춘다
+    restart: unless-stopped
+    logging: *logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -114,6 +127,7 @@ services:
     networks:
       - pdf-network
     restart: unless-stopped
+    logging: *logging
     deploy:
       resources:
         limits:
@@ -137,6 +151,7 @@ services:
     networks:
       - pdf-network
     restart: unless-stopped
+    logging: *logging
     deploy:
       resources:
         limits:
