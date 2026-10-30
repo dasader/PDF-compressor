@@ -107,3 +107,45 @@ def test_running_job_is_visible_before_compression_finishes(worker_db, make_job,
 
     assert seen["status"] == JobStatus.RUNNING
     assert seen["started_at"] is not None
+
+
+def test_redelivered_running_job_fails_after_retry_limit(worker_db, make_job):
+    """OOM 등으로 죽은 시도가 재배달되면 횟수를 세고, 한도에서 실패로 끊는다 (무한 재시도 방지)"""
+    job = make_job(id="task-dead", filename="task-dead.pdf", engine="pikepdf",
+                   status=JobStatus.RUNNING, retry_count=2)
+
+    result = tasks_mod.compress_pdf_task.run("task-dead")
+
+    assert result["success"] is False
+    worker_db.refresh(job)
+    assert job.status == JobStatus.FAILED
+    assert job.expires_at is not None
+
+
+def test_terminal_job_is_skipped(worker_db, make_job):
+    """취소된 작업의 메시지가 다시 와도 압축하지 않는다"""
+    job = make_job(id="task-cancelled", filename="x.pdf", status=JobStatus.CANCELLED)
+
+    result = tasks_mod.compress_pdf_task.run("task-cancelled")
+
+    assert result["skipped"] is True
+    worker_db.refresh(job)
+    assert job.status == JobStatus.CANCELLED
+
+
+def test_cleanup_fails_stuck_jobs(worker_db, make_job):
+    """하드 타임아웃으로 멈춘 RUNNING, 큐를 잃은 QUEUED를 실패로 돌려 정리 대상에 넣는다"""
+    from datetime import timedelta
+
+    long_ago = utcnow() - timedelta(days=2)
+    stuck_run = make_job(id="stuck-run", filename="a.pdf", status=JobStatus.RUNNING, started_at=long_ago)
+    stuck_queue = make_job(id="stuck-q", filename="b.pdf", status=JobStatus.QUEUED, created_at=long_ago)
+    fresh = make_job(id="fresh", filename="c.pdf", status=JobStatus.RUNNING, started_at=utcnow())
+
+    tasks_mod.cleanup_old_files_task.run()
+
+    for job in (stuck_run, stuck_queue, fresh):
+        worker_db.refresh(job)
+    assert stuck_run.status == JobStatus.FAILED and stuck_run.expires_at is not None
+    assert stuck_queue.status == JobStatus.FAILED
+    assert fresh.status == JobStatus.RUNNING
